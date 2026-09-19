@@ -823,6 +823,83 @@ const DataLayer = {
             if (e4) throw e4;
         }
     },
+    async insertTransfer(transfer) {
+        if (CLOUD_MODE === 'local') return;
+        const { error: e1 } = await SB.from('transfers').insert({
+            id: transfer.id,
+            date: transfer.date,
+            from_store_id: transfer.fromStoreId,
+            to_store_id: transfer.toStoreId,
+            reference: transfer.reference || null,
+            notes: transfer.notes || null,
+            status: transfer.status || 'Pending',
+            by_id: transfer.byId,
+            by_name: transfer.byName
+        });
+        if (e1) throw e1;
+        if (transfer.lines && transfer.lines.length > 0) {
+            const { error: e2 } = await SB.from('transfer_lines').insert(
+                transfer.lines.map(l => ({
+                    transfer_id: transfer.id,
+                    item_id: l.itemId,
+                    qty: l.qty,
+                    uom: l.uom
+                }))
+            );
+            if (e2) throw e2;
+        }
+    },
+
+    async updateTransfer(id, transfer) {
+        if (CLOUD_MODE === 'local') return;
+        const { error: e1 } = await SB.from('transfers').update({
+            date: transfer.date,
+            from_store_id: transfer.fromStoreId,
+            to_store_id: transfer.toStoreId,
+            reference: transfer.reference || null,
+            notes: transfer.notes || null
+        }).eq('id', id);
+        if (e1) throw e1;
+        const { error: e2 } = await SB.from('transfer_lines').delete().eq('transfer_id', id);
+        if (e2) throw e2;
+        if (transfer.lines && transfer.lines.length > 0) {
+            const { error: e3 } = await SB.from('transfer_lines').insert(
+                transfer.lines.map(l => ({
+                    transfer_id: id,
+                    item_id: l.itemId,
+                    qty: l.qty,
+                    uom: l.uom
+                }))
+            );
+            if (e3) throw e3;
+        }
+    },
+
+    async insertPurchase(purchase) {
+        if (CLOUD_MODE === 'local') return;
+        const { error: e1 } = await SB.from('purchases').insert({
+            id: purchase.id,
+            store_id: purchase.storeId,
+            date: purchase.date,
+            supplier: purchase.supplier || null,
+            by_id: purchase.byId,
+            by_name: purchase.byName,
+            status: purchase.status || 'Posted'
+        });
+        if (e1) throw e1;
+        if (purchase.lines && purchase.lines.length > 0) {
+            const { error: e2 } = await SB.from('purchase_lines').insert(
+                purchase.lines.map(l => ({
+                    purchase_id: purchase.id,
+                    item_id: l.itemId,
+                    qty: l.qty,
+                    uom: l.uom,
+                    cost: l.cost || 0
+                }))
+            );
+            if (e2) throw e2;
+        }
+    },
 
     async updateBOM(id, row) {
         if (CLOUD_MODE === 'local') return row;
@@ -2677,7 +2754,7 @@ function updateTransferLine(idx, field, value){
     if (field === 'qty') l.qty = Number(value) || 0;
     else if (field === 'itemId') { const it = getItem(value); l.itemId = value; l.uom = it ? it.uom : ''; renderTransferLines(); }
 }
-function saveTransfer(editId){
+async function saveTransfer(editId){
     const t = window._workingTransfer;
     t.date = document.getElementById('tDate').value;
     t.notes = document.getElementById('tNotes').value.trim();
@@ -2694,12 +2771,18 @@ function saveTransfer(editId){
         if (rec.status === 'Approved') { toast('Approved transfers cannot be edited', 'error'); return; }
         rec.date = t.date; rec.notes = t.notes; rec.reference = t.reference;
         rec.fromStoreId = t.fromStoreId; rec.toStoreId = t.toStoreId;
-        rec.lines = valid.map(l => ({ itemId: l.itemId, qty: l.qty, uom: l.uom }));
+                rec.lines = valid.map(l => ({ itemId: l.itemId, qty: l.qty, uom: l.uom }));
+        try {
+            await DataLayer.updateTransfer(rec.id, rec);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
         audit('UPDATE','transfer',rec.id,{ });
-        saveData(); closeModal(); toast('Transfer updated', 'success');
+        closeModal(); toast('Transfer updated', 'success');
     } else {
         const id = nextMovementId('TR', DB.transfers, t.date);
-        DB.transfers.push({
+        const rec = {
             id, date: t.date,
             fromStoreId: t.fromStoreId,
             toStoreId: t.toStoreId,
@@ -2711,9 +2794,16 @@ function saveTransfer(editId){
             createdAt: nowISO(),
             approvedAt: null, approvedById: null, approvedByName: null,
             rejectedAt: null, rejectedById: null, rejectedByName: null
-        });
+        };
+        try {
+            await DataLayer.insertTransfer(rec);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+        DB.transfers.push(rec);
         audit('CREATE','transfer',id,{ from:t.fromStoreId, to:t.toStoreId, lines:valid.length });
-        saveData(); closeModal(); toast(`Transfer ${id} submitted for approval`, 'success');
+        closeModal(); toast(`Transfer ${id} submitted for approval`, 'success');
     }
     showPage('transfers');
 }
@@ -3712,21 +3802,28 @@ function updatePurchaseLine(idx, field, value){
     else l[field] = value;
     if (field==='itemId') { const it = getItem(value); if (it) { l.uom = it.uom; l.cost = it.cost; } renderPurchaseLines(); }
 }
-function savePurchase(){
+async function savePurchase(){
     const p = window._workingPurchase;
     p.supplier = document.getElementById('pSupplier').value.trim();
     p.date = document.getElementById('pDate').value;
     if (!isInScope(p.storeId)) { toast('Access denied.', 'error'); return; }
     const valid = p.lines.filter(l => l.itemId && l.qty > 0);
     if (valid.length === 0) { toast('No valid lines', 'error'); return; }
-    const u = currentUser();
+        const u = currentUser();
     const id = nextMovementId('PO', DB.purchases, p.date);
-    DB.purchases.push({
+    const rec = {
         id, storeId:p.storeId, date:p.date, supplier:p.supplier,
         lines: valid.map(l => ({ itemId:l.itemId, qty:l.qty, uom:l.uom, cost:l.cost||0 })),
         byId:u.id, byName:u.name, status:'Posted', createdAt:nowISO()
-    });
-    saveData(); window._workingPurchase = null; closeModal();
+    };
+    try {
+        await DataLayer.insertPurchase(rec);
+    } catch(err) {
+        toast('Save failed: ' + (err.message || err), 'error');
+        return;
+    }
+    DB.purchases.push(rec);
+    window._workingPurchase = null; closeModal();
     toast(`Purchase ${id} saved`, 'success'); showPage('purchases');
 }
 
