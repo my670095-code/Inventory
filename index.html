@@ -2063,11 +2063,12 @@ function openItemModal(editId){
         <button class="btn-primary" onclick="saveItem('${editId||''}')">${editing?'Save Changes':'Add Item'}</button>
     `);
 }
-function saveItem(editId){
+async function saveItem(editId){
     const code = document.getElementById('mICode').value.trim();
     const name = document.getElementById('mIName').value.trim();
     if (!code || !name) { toast('Code and Name required', 'error'); return; }
     if (DB.items.find(i => i.code===code && i.id !== editId)) { toast('Code exists', 'error'); return; }
+
     if (editId) {
         const i = getItem(editId);
         if (!i) { toast('Not found', 'error'); return; }
@@ -2078,12 +2079,21 @@ function saveItem(editId){
         i.daily = document.getElementById('mIDaily').checked;
         i.weekly = document.getElementById('mIWeekly').checked;
         i.monthly = document.getElementById('mIMonthly').checked;
+
+        try {
+            await DataLayer.updateItem(i.id, i);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
         audit('UPDATE','item',i.id,{ code, name });
-        saveData(); closeModal(); toast('Item updated', 'success');
+        closeModal(); toast('Item updated', 'success');
     } else {
         const id = 'i-' + code.toLowerCase().replace(/[^a-z0-9]/g,'');
         if (getItem(id)) { toast('ID collision', 'error'); return; }
-        DB.items.push({
+
+        const rec = {
             id, code, name,
             cat: document.getElementById('mICat').value,
             uom: document.getElementById('mIUOM').value || 'PCS',
@@ -2092,13 +2102,21 @@ function saveItem(editId){
             weekly: document.getElementById('mIWeekly').checked,
             monthly: document.getElementById('mIMonthly').checked,
             status:'Active', createdAt: nowISO()
-        });
+        };
+
+        try {
+            await DataLayer.insertItem(rec);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
+        DB.items.push(rec);
         audit('CREATE','item',id,{ code, name });
-        saveData(); closeModal(); toast('Item added', 'success');
+        closeModal(); toast('Item added', 'success');
     }
     showPage('items');
 }
-
 /* ---------- BOM ---------- */
 RENDERERS.bom = function(){
     const canCreate = can('createBOM');
