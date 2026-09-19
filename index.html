@@ -2766,7 +2766,7 @@ function updateSalesTagPreview(){
     }
     preview.innerHTML = tag;
 }
-function handleSalesUpload(evt){
+async function handleSalesUpload(evt){
     const file = evt.target.files[0];
     if (!file) return;
     if (!XLSX_READY) { toast('Excel library loading', 'error'); evt.target.value=''; return; }
@@ -2776,13 +2776,13 @@ function handleSalesUpload(evt){
     const week = inventoryType === 'weekly' ? weekTagFromISO(batchDate) : null;
     const monthTag = monthTagFromISO(batchDate);
     const reader = new FileReader();
-    reader.onload = function(e){
+    reader.onload = async function(e){
         try {
             const data = new Uint8Array(e.target.result);
             const wb = XLSX.read(data, { type:'array', cellDates: true });
             const sheet = wb.Sheets[wb.SheetNames[0]];
             const json = XLSX.utils.sheet_to_json(sheet, { defval:'', raw: true });
-            processSalesRows(json, file.name, { batchDate, inventoryType, week, monthTag });
+            await processSalesRows(json, file.name, { batchDate, inventoryType, week, monthTag });
         } catch(err) { toast('Parse failed: ' + err.message, 'error'); }
     };
     reader.readAsArrayBuffer(file);
