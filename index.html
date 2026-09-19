@@ -1572,7 +1572,7 @@ function openEmployeeModal(editId){
         <button class="btn-primary" onclick="saveEmployee('${editId||''}')">${editing?'Save Changes':'Add Employee'}</button>
     `);
 }
-function saveEmployee(editId){
+async function saveEmployee(editId){
     const code = document.getElementById('eCode').value.trim();
     const name = document.getElementById('eName').value.trim();
     const role = document.getElementById('eRole').value;
@@ -1581,25 +1581,50 @@ function saveEmployee(editId){
     if (dupCode) { toast('Employee code already exists', 'error'); return; }
     const dupName = DB.employees.find(e => norm(e.name) === norm(name) && e.id !== editId);
     if (dupName) { toast('Employee name already exists', 'error'); return; }
+
     if (editId) {
         const e = getEmployee(editId);
         if (!e) { toast('Not found', 'error'); return; }
         const oldName = e.name;
         e.code = code; e.name = name; e.role = role;
-        if (oldName !== name) {
-            DB.stores.forEach(s => {
-                if (norm(s.storeManagerName) === norm(oldName)) s.storeManagerName = name;
-                if (norm(s.areaManagerName) === norm(oldName)) s.areaManagerName = name;
-                if (norm(s.operationManagerName) === norm(oldName)) s.operationManagerName = name;
-            });
+
+        try {
+            await DataLayer.updateEmployee(e.id, e);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
         }
+
+        if (oldName !== name) {
+            for (const s of DB.stores) {
+                let changed = false;
+                if (norm(s.storeManagerName) === norm(oldName)) { s.storeManagerName = name; changed = true; }
+                if (norm(s.areaManagerName) === norm(oldName)) { s.areaManagerName = name; changed = true; }
+                if (norm(s.operationManagerName) === norm(oldName)) { s.operationManagerName = name; changed = true; }
+                if (changed) {
+                    try { await DataLayer.updateStore(s.id, s); } catch(e) {}
+                }
+            }
+        }
+
         audit('UPDATE','employee',e.id,{ code, name, role });
-        saveData(); closeModal(); toast('Employee updated', 'success');
+        closeModal();
+        toast('Employee updated', 'success');
+
     } else {
         const rec = { id: uid('emp'), code, name, role, status:'Active', createdAt: nowISO() };
+
+        try {
+            await DataLayer.insertEmployee(rec);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
         DB.employees.push(rec);
         audit('CREATE','employee',rec.id,{ code, name, role });
-        saveData(); closeModal(); toast(`Employee "${name}" added`, 'success');
+        closeModal();
+        toast(`Employee "${name}" added`, 'success');
     }
     showPage('employees');
 }
