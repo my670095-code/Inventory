@@ -1561,9 +1561,15 @@ function ledgerMatchesJournal(c, journal){
     return false;
 }
 function sumConsumptionTagged(storeId, itemId, journal){
+    // Weekly: sum ALL consumption from month start through journal.date
+    // (includes daily uploads + any weekly upload + anything else in range)
+    const monthStart = monthStartISO(journal.month).slice(0,10);
     let sum = 0;
     DB.consumptionLedger.forEach(c => {
-        if (!ledgerMatchesJournal(c, journal)) return;
+        if (c.storeId !== storeId) return;
+        const d = c.date || '';
+        if (d < monthStart) return;
+        if (d > journal.date) return;
         c.lines.forEach(l => { if (l.itemId === itemId) sum += Number(l.qty)||0; });
     });
     return sum;
@@ -1595,7 +1601,8 @@ function buildCountLines(journal){
     });
     let openingSource = { source:'month-opening', journal:null };
     let purchaseFn, tInFn, tOutFn, consFn;
-    if (type === 'daily' || type === 'weekly') {
+    if (type === 'daily') {
+        // Daily: roll forward from previous journal (or month start if none)
         const lastJ = getLastJournalForStore(storeId, journal.createdAt || nowISO());
         if (lastJ) {
             openingSource = { source:'previous-journal', journal: lastJ };
@@ -1608,7 +1615,14 @@ function buildCountLines(journal){
             tOutFn     = (id) => sumTransfersOutInRange(storeId, id, monthStart, journal.date);
         }
         consFn = (id) => sumConsumptionTagged(storeId, id, journal);
+    } else if (type === 'weekly') {
+        // Weekly: month start → journal date (aggregates all daily uploads so far)
+        purchaseFn = (id) => sumPurchasesInRange(storeId, id, monthStart, journal.date);
+        tInFn      = (id) => sumTransfersInInRange(storeId, id, monthStart, journal.date);
+        tOutFn     = (id) => sumTransfersOutInRange(storeId, id, monthStart, journal.date);
+        consFn     = (id) => sumConsumptionTagged(storeId, id, journal);
     } else {
+        // Closing: whole month
         purchaseFn = (id) => sumPurchasesInRange(storeId, id, monthStart, monthEnd);
         tInFn      = (id) => sumTransfersInInRange(storeId, id, monthStart, monthEnd);
         tOutFn     = (id) => sumTransfersOutInRange(storeId, id, monthStart, monthEnd);
@@ -1679,15 +1693,34 @@ function editBtn(entityType, id, handlerName){
 
 /* ---------- SALES-DATA GATE ---------- */
 function findSalesUploadForJournal(journal){
-    return DB.salesUploads.find(s => {
-        if (s.storeId !== journal.storeId) return false;
-        const type = s.inventoryType || 'daily';
-        if (type !== journal.type) return false;
-        if (type === 'daily') return s.date === journal.date;
-        if (type === 'weekly') return (s.week || '') === (journal.week || '');
-        if (type === 'closing') return (s.month || '') === (journal.month || '');
-        return false;
-    });
+    // For daily: need an upload tagged daily for that date
+    // For weekly: need ANY upload in the range (month start → journal date)
+    // For closing: need ANY upload in the month
+    const monthStart = monthStartISO(journal.month).slice(0,10);
+    const monthEnd = monthEndISO(journal.month).slice(0,10);
+
+    if (journal.type === 'daily') {
+        return DB.salesUploads.find(s =>
+            s.storeId === journal.storeId &&
+            (s.inventoryType || 'daily') === 'daily' &&
+            s.date === journal.date
+        );
+    }
+    if (journal.type === 'weekly') {
+        return DB.salesUploads.find(s =>
+            s.storeId === journal.storeId &&
+            s.date >= monthStart &&
+            s.date <= journal.date
+        );
+    }
+    if (journal.type === 'closing') {
+        return DB.salesUploads.find(s =>
+            s.storeId === journal.storeId &&
+            s.date >= monthStart &&
+            s.date <= monthEnd
+        );
+    }
+    return null;
 }
 let _salesPrefill = null;
 function goToSalesUploadWithPrefill(prefill){
