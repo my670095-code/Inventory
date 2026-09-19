@@ -1734,7 +1734,7 @@ function openStoreModal(editId){
         <button class="btn-primary" onclick="saveStore('${editId||''}')">${editing?'Save Changes':'Add Store'}</button>
     `);
 }
-function saveStore(editId){
+async function saveStore(editId){
     const code = document.getElementById('mSCode').value.trim();
     const name = document.getElementById('mSName').value.trim();
     const area = document.getElementById('mSArea').value.trim() || 'Unassigned';
@@ -1745,6 +1745,7 @@ function saveStore(editId){
     if (!code || !name) { toast('Code and Name required', 'error'); return; }
     const dup = DB.stores.find(s => norm(s.code) === norm(code) && s.id !== editId);
     if (dup) { toast('Store code exists', 'error'); return; }
+
     if (editId) {
         const s = getStore(editId);
         if (!s) { toast('Not found', 'error'); return; }
@@ -1752,18 +1753,36 @@ function saveStore(editId){
         s.storeManagerName = storeManagerName;
         s.areaManagerName = areaManagerName;
         s.operationManagerName = operationManagerName;
+
+        try {
+            await DataLayer.updateStore(s.id, s);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
         audit('UPDATE','store',s.id,{ code, name });
-        saveData(); closeModal(); toast('Store updated', 'success');
+        closeModal(); toast('Store updated', 'success');
     } else {
         const id = 's-' + code;
         if (getStore(id)) { toast('Store ID collision', 'error'); return; }
-        DB.stores.push({
+
+        const rec = {
             id, code, name, area, type,
             storeManagerName, areaManagerName, operationManagerName,
             status:'Active', createdAt: nowISO()
-        });
+        };
+
+        try {
+            await DataLayer.insertStore(rec);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
+        DB.stores.push(rec);
         audit('CREATE','store',id,{ code, name });
-        saveData(); closeModal(); toast('Store added', 'success');
+        closeModal(); toast('Store added', 'success');
     }
     showPage('stores');
 }
