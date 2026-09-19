@@ -1138,8 +1138,6 @@ async function softDelete(entityType, id, reason){
             toast('Delete failed: ' + (err.message || err), 'error');
             return false;
         }
-    }
-
     DB.voidedRecords.push({...});
     col.splice(idx, 1);
     if (entityType === 'salesUp') DB.consumptionLedger = DB.consumptionLedger.filter(x => x.uploadRef !== id);
