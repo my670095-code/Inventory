@@ -2788,7 +2788,7 @@ function handleSalesUpload(evt){
     reader.readAsArrayBuffer(file);
     evt.target.value = '';
 }
-function processSalesRows(rows, filename, tag){
+async function processSalesRows(rows, filename, tag){
     const u = currentUser();
     const myStoreIds = new Set(getMyStores(u));
     if (rows.length === 0) { toast('File is empty', 'error'); return; }
