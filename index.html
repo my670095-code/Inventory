@@ -2259,7 +2259,7 @@ function updateBOMLine(idx, field, value){
         renderBOMLines();
     }
 }
-function saveBOM(editId){
+async function saveBOM(editId){
     const productId = document.getElementById('mBProductId').value.trim();
     const productName = document.getElementById('mBProductName').value.trim();
     const cat = document.getElementById('mBCat').value;
@@ -2276,21 +2276,39 @@ function saveBOM(editId){
         if (seen.has(l.itemId)) { toast(`Duplicate ingredient: ${l.itemCode}`, 'error'); return; }
         seen.add(l.itemId);
     }
+
     if (editId) {
         const b = DB.bom.find(x => x.id === editId);
         if (!b) { toast('Not found', 'error'); return; }
         b.productName = productName; b.cat = cat; b.version = version; b.effective = effective;
         b.lines = lines.map(l => ({ itemId: l.itemId, itemCode: l.itemCode, itemName: l.itemName, qty: l.qty, uom: l.uom }));
+
+        try {
+            await DataLayer.updateBOM(b.id, b);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
         audit('UPDATE','bom',b.id,{ productId, productName });
-        saveData(); closeModal(); toast('BOM updated', 'success');
+        closeModal(); toast('BOM updated', 'success');
     } else {
         const id = 'BOM-' + String(DB.bom.length + 1).padStart(5, '0');
-        DB.bom.push({
+        const rec = {
             id, productId, productName, cat, version, effective, status:'Active',
             lines: lines.map(l => ({ itemId: l.itemId, itemCode: l.itemCode, itemName: l.itemName, qty: l.qty, uom: l.uom }))
-        });
+        };
+
+        try {
+            await DataLayer.insertBOM(rec);
+        } catch(err) {
+            toast('Save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
+        DB.bom.push(rec);
         audit('CREATE','bom',id,{ productId, productName });
-        saveData(); closeModal(); toast('BOM created', 'success');
+        closeModal(); toast('BOM created', 'success');
     }
     showPage('bom');
 }
