@@ -1094,20 +1094,53 @@ function getDeleteBlockers(entityType, id){
     }
     return blockers;
 }
-function softDelete(entityType, id, reason){
+async function softDelete(entityType, id, reason){
     const reg = ENTITIES[entityType];
     if (!reg) return false;
     const col = DB[reg.key];
     const idx = col.findIndex(x => x.id === id);
     if (idx < 0) return false;
     const record = col[idx];
-    DB.voidedRecords.push({
-        id: uid('void'), entityType, originalId: id,
-        label: record[reg.nameField] || id,
-        snapshot: JSON.parse(JSON.stringify(record)),
-        reason: reason || '', voidedAt: nowISO(),
-        voidedById: currentUser()?.id, voidedByName: currentUser()?.name || 'system'
-    });
+
+    // In cloud mode, actually delete from Supabase
+    if (CLOUD_MODE === 'supabase') {
+        try {
+            if (entityType === 'journal') {
+                await SB.from('journal_lines').delete().eq('journal_id', id);
+                await SB.from('journals').delete().eq('id', id);
+            } else if (entityType === 'salesUp') {
+                await SB.from('consumption_ledger_lines').delete().eq('ledger_id', 
+                    (await SB.from('consumption_ledger').select('id').eq('upload_ref', id).single()).data?.id
+                );
+                await SB.from('consumption_ledger').delete().eq('upload_ref', id);
+                await SB.from('sales_upload_lines').delete().eq('upload_id', id);
+                await SB.from('sales_uploads').delete().eq('id', id);
+            } else if (entityType === 'openingStock') {
+                await SB.from('opening_stock_lines').delete().eq('opening_id', id);
+                await SB.from('opening_stock').delete().eq('id', id);
+            } else if (entityType === 'purchase') {
+                await SB.from('purchase_lines').delete().eq('purchase_id', id);
+                await SB.from('purchases').delete().eq('id', id);
+            } else if (entityType === 'transfer') {
+                await SB.from('transfer_lines').delete().eq('transfer_id', id);
+                await SB.from('transfers').delete().eq('id', id);
+            } else if (entityType === 'bom') {
+                await SB.from('bom_lines').delete().eq('bom_id', id);
+                await SB.from('bom').delete().eq('id', id);
+            } else if (entityType === 'store') {
+                await SB.from('stores').delete().eq('id', id);
+            } else if (entityType === 'item') {
+                await SB.from('items').delete().eq('id', id);
+            } else if (entityType === 'employee') {
+                await SB.from('employees').delete().eq('id', id);
+            }
+        } catch(err) {
+            toast('Delete failed: ' + (err.message || err), 'error');
+            return false;
+        }
+    }
+
+    DB.voidedRecords.push({...});
     col.splice(idx, 1);
     if (entityType === 'salesUp') DB.consumptionLedger = DB.consumptionLedger.filter(x => x.uploadRef !== id);
     audit('VOID', entityType, id, { reason: reason || '' });
@@ -1165,9 +1198,9 @@ function requestDelete(entityType, id){
         <button class="btn-light" onclick="closeModal()">Cancel</button>
         <button class="btn-danger" onclick="confirmDelete('${entityType}','${id}')">Yes, Void It</button>`);
 }
-function confirmDelete(entityType, id){
+async function confirmDelete(entityType, id){
     const reason = (document.getElementById('deleteReason')?.value || '').trim();
-    const ok = softDelete(entityType, id, reason);
+    const ok = await softDelete(entityType, id, reason);
     closeModal();
     if (ok) { toast('Deleted', 'success'); showPage(currentPageKey()); }
 }
