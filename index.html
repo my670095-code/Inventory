@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dr Cafe ERP</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -39,8 +40,11 @@
     <div id="sidebarMenu"></div>
 </div>
 <div class="main">
-    <div class="topbar">
-        <div class="page-title" id="pageTitle">Dashboard</div>
+   <div class="topbar">
+    <div class="page-title" id="pageTitle">Dashboard</div>
+    <div id="pwBanner" style="display:none;background:#fef3c7;border:1px solid #fcd34d;color:#92400e;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:bold">
+        ⚠ Using default password — <a onclick="openChangePassword()" style="color:#78350f;text-decoration:underline;cursor:pointer">change it now</a>
+    </div>
         <div class="user">
             <div class="user-info"><b id="userName">—</b><div class="role-tag" id="userRole">—</div></div>
             <div class="avatar" id="userAvatar">—</div>
@@ -315,7 +319,6 @@ input:focus, select:focus { outline:none; border-color:#1a7a4c; box-shadow:0 0 0
 
 .upload-options { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:16px; padding:16px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; }
 .upload-options .form-row { margin-bottom:0; }
-.upload-options.two-col { grid-template-columns:repeat(2,1fr); }
 
 .gate-icon { font-size:42px; text-align:center; display:block; margin-bottom:12px; }
 .gate-title { font-size:16px; font-weight:bold; color:#b91c1c; text-align:center; margin-bottom:14px; }
@@ -347,13 +350,31 @@ input:focus, select:focus { outline:none; border-color:#1a7a4c; box-shadow:0 0 0
     .upload-options { grid-template-columns:1fr; }
 }
 </style>
+
 <script>
 /* ============================================================
-   Dr Cafe ERP — Phase 14.3
-   Shift (Morning/Evening) removed from entire module
+   Dr Cafe ERP — Phase 14.4
+   - Shift (Morning/Evening) removed
+   - Adjustments module removed entirely
+   - + New buttons always visible for authorized users
    ============================================================ */
 'use strict';
-console.log('[Dr Cafe ERP] Phase 14.3 boot');
+console.log('[Dr Cafe ERP] Phase 14.4 boot');
+/* ============================================================
+   CLOUD CONFIG
+   ============================================================ */
+const CLOUD_MODE     = 'supabase';   // 'local' | 'supabase'
+const SUPABASE_URL   = 'https://xmavnzfumqddvgiyywdz.supabase.co';
+const SUPABASE_ANON  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtYXZuemZ1bXFkZHZnaXl5d2R6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTA5MzYsImV4cCI6MjEwNTM4NjkzNn0.1FeOwBnESlO694jDnrmS4ft_y9HXIN_uKp0AOXN4xSo';
+const ADMIN_EMAIL    = 'admin@drcafe.com';
+
+let SB = null;
+if (CLOUD_MODE === 'supabase') {
+    SB = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, {
+        auth: { persistSession: true, autoRefreshToken: true },
+        realtime: { params: { eventsPerSecond: 5 } }
+    });
+}
 
 let XLSX_READY = false;
 (function(){
@@ -363,18 +384,17 @@ let XLSX_READY = false;
     document.head.appendChild(s);
 })();
 
-const STORAGE_KEY = 'erp_inventory_data_v22';
-const SESSION_KEY = 'erp_inventory_session_v22';
+const STORAGE_KEY = 'erp_inventory_data_v21';
+const SESSION_KEY = 'erp_inventory_session_v21';
 const LEGACY_KEYS = ['erp_inventory_data_v1','erp_inventory_data_v2','erp_inventory_data_v3',
                      'erp_inventory_data_v4','erp_inventory_data_v5','erp_inventory_data_v6',
                      'erp_inventory_data_v7','erp_inventory_data_v8','erp_inventory_data_v9',
                      'erp_inventory_data_v10','erp_inventory_data_v11','erp_inventory_data_v12',
                      'erp_inventory_data_v13','erp_inventory_data_v14','erp_inventory_data_v15',
                      'erp_inventory_data_v16','erp_inventory_data_v17','erp_inventory_data_v18',
-                     'erp_inventory_data_v19','erp_inventory_data_v20','erp_inventory_data_v21'];
+                     'erp_inventory_data_v19','erp_inventory_data_v20'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const EMPLOYEE_ROLES = ['Store Manager', 'Area Manager', 'Operation Manager'];
-const ADJUSTMENT_REASONS = ['Inventory Variance','Damage','Expiry','Theft','Wrong Entry','Receiving Correction','Other'];
 
 /* ---------- HELPERS ---------- */
 function uid(p){ return p+'-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
@@ -384,39 +404,17 @@ function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,
 function fmtNum(n){ return Number(n||0).toFixed(2); }
 function norm(s){ return String(s||'').trim().toLowerCase(); }
 
-function normalizeDate(d){
-    if (d === null || d === undefined || d === '') return '';
-    if (d instanceof Date) { if (isNaN(d.getTime())) return ''; return d.toISOString().slice(0,10); }
-    if (typeof d === 'number' && d > 20000 && d < 80000) {
-        const epoch = new Date(Date.UTC(1899, 11, 30));
-        const dt = new Date(epoch.getTime() + d * 86400000);
-        return dt.toISOString().slice(0,10);
-    }
-    const s = String(d).trim();
-    if (!s) return '';
-    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
-    const parts = s.split(/[\/\-\.]/);
-    if (parts.length === 3) {
-        let [a,b,c] = parts.map(x => parseInt(x,10));
-        if (isNaN(a)||isNaN(b)||isNaN(c)) return '';
-        if (a > 12) return `${c}-${String(b).padStart(2,'0')}-${String(a).padStart(2,'0')}`;
-        if (c > 1000 && a <= 12 && b <= 12) return `${c}-${String(b).padStart(2,'0')}-${String(a).padStart(2,'0')}`;
-        return `${c}-${String(a).padStart(2,'0')}-${String(b).padStart(2,'0')}`;
-    }
-    return '';
-}
-
 const ROLE_LABEL = {
     admin:'Administrator', opmanager:'Operation Manager', area:'Area Manager',
     store:'Store Manager', wh:'Warehouse', viewer:'Viewer'
 };
 
 const PERMISSIONS = {
-    admin:     ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','adjustments','items','bom','stores','employees','reports','users','recycle','backup'],
-    opmanager: ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','adjustments','items','bom','stores','employees','reports'],
-    area:      ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','adjustments','items','bom','stores','employees','reports'],
-    store:     ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','adjustments','items','bom','employees','reports'],
-    wh:        ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','adjustments','items','bom','reports'],
+    admin:     ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','items','bom','stores','employees','reports','users','recycle','backup'],
+    opmanager: ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','items','bom','stores','employees','reports'],
+    area:      ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','items','bom','stores','employees','reports'],
+    store:     ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','items','bom','employees','reports'],
+    wh:        ['dashboard','opening','purchases','sales','daily','weekly','closing','transfers','items','bom','reports'],
     viewer:    ['dashboard','reports']
 };
 
@@ -429,8 +427,6 @@ const ACTIONS = {
     closeMonth:        ['admin','opmanager','area','store'],
     createTransfer:    ['admin','opmanager','area','store','wh'],
     approveTransfer:   ['admin','area'],
-    createAdjustment:  ['admin','opmanager','area','store','wh'],
-    approveAdjustment: ['admin','area'],
     createItem:        ['admin'],
     createBOM:         ['admin'],
     createStore:       ['admin'],
@@ -452,7 +448,7 @@ function defaultData(){
         openingStock: [], purchases: [],
         salesUploads: [], consumptionLedger: [],
         journals: [],
-        transfers: [], adjustments: [],
+        transfers: [],
         closedMonths: [], voidedRecords: [], auditLog: []
     };
 }
@@ -465,7 +461,10 @@ function isValidData(d){
         && Array.isArray(d.journals) && Array.isArray(d.closedMonths)
         && d.users.every(u => u && u.username && u.pass);
 }
-function loadData(){
+async function loadData(){
+    if (CLOUD_MODE === 'supabase') {
+        return await DataLayer.loadAll();
+    }
     LEGACY_KEYS.forEach(k => { if (localStorage.getItem(k)) localStorage.removeItem(k); });
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
@@ -477,7 +476,7 @@ function loadData(){
                 if (!Array.isArray(p.salesUploads)) p.salesUploads = [];
                 if (!Array.isArray(p.consumptionLedger)) p.consumptionLedger = [];
                 if (!Array.isArray(p.transfers)) p.transfers = [];
-                if (!Array.isArray(p.adjustments)) p.adjustments = [];
+                delete p.adjustments;
                 return p;
             }
             localStorage.removeItem(STORAGE_KEY);
@@ -490,9 +489,255 @@ function loadData(){
 function saveData(){
     if (!DB) return;
     DB.meta.lastSaved = nowISO();
+    if (CLOUD_MODE === 'supabase') return;   // cloud writes happen explicitly per mutation
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); }
     catch(e) { toast('Storage full!', 'error'); }
 }
+/* ============================================================
+   DATA LAYER — single gateway to storage
+   ============================================================ */
+const DataLayer = {
+
+    async loadAll() {
+        if (CLOUD_MODE === 'local') {
+            return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') || defaultData();
+        }
+        const me = await this.me();
+        const [stores, items, bom, bomLines, employees, profiles] = await Promise.all([
+            SB.from('stores').select('*').eq('status','Active'),
+            SB.from('items').select('*'),
+            SB.from('bom').select('*'),
+            SB.from('bom_lines').select('*'),
+            SB.from('employees').select('*'),
+            SB.from('profiles').select('*')
+        ]);
+        if (stores.error) throw stores.error;
+        const bomWithLines = (bom.data || []).map(b => ({
+            ...b,
+            productId: b.product_id,
+            productName: b.product_name,
+            lines: (bomLines.data || []).filter(l => l.bom_id === b.id).map(l => ({
+                itemId: l.item_id, itemCode: l.item_code, itemName: l.item_name,
+                qty: Number(l.qty), uom: l.uom
+            }))
+        }));
+        return {
+            meta: { version: 22, lastSaved: nowISO() },
+            users: (profiles.data || []).map(p => ({
+                id: p.id, username: p.email, email: p.email, name: p.name,
+                initials: p.initials, role: p.role, storeId: p.store_id,
+                active: p.active, mustChangePassword: p.must_change_password
+            })),
+            stores: (stores.data || []).map(s => ({
+                id: s.id, code: s.code, name: s.name, area: s.area, type: s.type,
+                storeManagerName: s.store_manager_name,
+                areaManagerName: s.area_manager_name,
+                operationManagerName: s.operation_manager_name,
+                status: s.status
+            })),
+            items: (items.data || []).map(i => ({
+                id: i.id, code: i.code, name: i.name, cat: i.cat, uom: i.uom,
+                cost: Number(i.cost)||0, daily: i.daily, weekly: i.weekly, monthly: i.monthly,
+                status: i.status
+            })),
+            bom: bomWithLines,
+            employees: (employees.data || []).map(e => ({
+                id: e.id, code: e.code, name: e.name, role: e.role, status: e.status
+            })),
+            openingStock: [], purchases: [], salesUploads: [],
+            consumptionLedger: [], journals: [], transfers: [],
+            closedMonths: [], voidedRecords: [], auditLog: []
+        };
+    },
+
+    async me() {
+        if (CLOUD_MODE === 'local') return currentUser();
+        const { data: { user } } = await SB.auth.getUser();
+        if (!user) return null;
+        const { data: profile } = await SB.from('profiles').select('*').eq('id', user.id).single();
+        if (!profile) return null;
+        return {
+            id: profile.id, username: profile.email, email: profile.email,
+            name: profile.name, initials: profile.initials, role: profile.role,
+            storeId: profile.store_id, active: profile.active,
+            mustChangePassword: profile.must_change_password
+        };
+    },
+
+    async insertStore(row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { data, error } = await SB.from('stores').insert({
+            id: row.id, code: row.code, name: row.name, area: row.area, type: row.type,
+            store_manager_name: row.storeManagerName,
+            area_manager_name: row.areaManagerName,
+            operation_manager_name: row.operationManagerName,
+            status: row.status || 'Active'
+        }).select().single();
+        if (error) throw error;
+        return data;
+    },
+
+    async updateStore(id, row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { error } = await SB.from('stores').update({
+            code: row.code, name: row.name, area: row.area, type: row.type,
+            store_manager_name: row.storeManagerName,
+            area_manager_name: row.areaManagerName,
+            operation_manager_name: row.operationManagerName
+        }).eq('id', id);
+        if (error) throw error;
+    },
+
+    async insertItem(row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { error } = await SB.from('items').insert({
+            id: row.id, code: row.code, name: row.name, cat: row.cat, uom: row.uom,
+            cost: row.cost, daily: row.daily, weekly: row.weekly, monthly: row.monthly,
+            status: row.status || 'Active'
+        });
+        if (error) throw error;
+    },
+
+    async updateItem(id, row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { error } = await SB.from('items').update({
+            code: row.code, name: row.name, cat: row.cat, uom: row.uom,
+            cost: row.cost, daily: row.daily, weekly: row.weekly, monthly: row.monthly
+        }).eq('id', id);
+        if (error) throw error;
+    },
+
+    async insertEmployee(row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { error } = await SB.from('employees').insert({
+            code: row.code, name: row.name, role: row.role, status: 'Active'
+        });
+        if (error) throw error;
+    },
+
+    async updateEmployee(id, row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { error } = await SB.from('employees').update({
+            code: row.code, name: row.name, role: row.role
+        }).eq('id', id);
+        if (error) throw error;
+    },
+
+    async insertBOM(row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { error: e1 } = await SB.from('bom').insert({
+            id: row.id, product_id: row.productId, product_name: row.productName,
+            cat: row.cat, version: row.version, effective: row.effective,
+            status: row.status || 'Active'
+        });
+        if (e1) throw e1;
+        if (row.lines.length > 0) {
+            const { error: e2 } = await SB.from('bom_lines').insert(
+                row.lines.map(l => ({
+                    bom_id: row.id, item_id: l.itemId, item_code: l.itemCode,
+                    item_name: l.itemName, qty: l.qty, uom: l.uom
+                }))
+            );
+            if (e2) throw e2;
+        }
+    },
+
+    async updateBOM(id, row) {
+        if (CLOUD_MODE === 'local') return row;
+        const { error: e1 } = await SB.from('bom').update({
+            product_name: row.productName, cat: row.cat, version: row.version,
+            effective: row.effective
+        }).eq('id', id);
+        if (e1) throw e1;
+        const { error: e2 } = await SB.from('bom_lines').delete().eq('bom_id', id);
+        if (e2) throw e2;
+        if (row.lines.length > 0) {
+            const { error: e3 } = await SB.from('bom_lines').insert(
+                row.lines.map(l => ({
+                    bom_id: id, item_id: l.itemId, item_code: l.itemCode,
+                    item_name: l.itemName, qty: l.qty, uom: l.uom
+                }))
+            );
+            if (e3) throw e3;
+        }
+    },
+
+    async submitJournal(journal) {
+        if (CLOUD_MODE === 'local') return journal;
+        const { data, error } = await SB.rpc('submit_journal', {
+            p_header: {
+                id: journal.id,
+                store_id: journal.storeId,
+                type: journal.type,
+                date: journal.date,
+                month: journal.month,
+                week: journal.week || '',
+                by_id: journal.byId || '',
+                by_name: journal.byName,
+                status: journal.status || 'Submitted'
+            },
+            p_lines: journal.lines
+        });
+        if (error) throw error;
+        return data;
+    },
+
+    async approveTransfer(transferId, approver) {
+        if (CLOUD_MODE === 'local') return null;
+        const { data, error } = await SB.rpc('approve_transfer', {
+            p_transfer_id: transferId,
+            p_approver_id: approver.id,
+            p_approver_name: approver.name
+        });
+        if (error) throw error;
+        return data;
+    },
+
+    async fetchJournals(type, storeIds) {
+        if (CLOUD_MODE === 'local') {
+            return DB.journals.filter(j => j.type === type && storeIds.includes(j.storeId));
+        }
+        const { data: js, error } = await SB.from('journals')
+            .select('*').eq('type', type).in('store_id', storeIds)
+            .order('date', { ascending: false }).limit(200);
+        if (error) throw error;
+        if (!js || js.length === 0) return [];
+        const ids = js.map(j => j.id);
+        const { data: lines, error: e2 } = await SB.from('journal_lines')
+            .select('*').in('journal_id', ids);
+        if (e2) throw e2;
+        return js.map(j => ({
+            id: j.id, type: j.type, date: j.date, month: j.month, week: j.week,
+            storeId: j.store_id, byId: j.by_id, byName: j.by_name,
+            status: j.status, createdAt: j.created_at,
+            lines: (lines || []).filter(l => l.journal_id === j.id).map(l => ({
+                itemId: l.item_id, uom: l.uom,
+                opening: Number(l.opening), purchases: Number(l.purchases),
+                transfersIn: Number(l.transfers_in), transfersOut: Number(l.transfers_out),
+                consumption: Number(l.consumption), expected: Number(l.expected),
+                physical: Number(l.physical), variance: Number(l.variance),
+                mtdPurchases: Number(l.mtd_purchases), mtdConsumption: Number(l.mtd_consumption)
+            }))
+        }));
+    },
+
+    subscribeToChanges(user, onJournalChange, onTransferChange) {
+        if (CLOUD_MODE === 'local' || !SB) return null;
+        const storeIds = getMyStores(user);
+        if (storeIds.length === 0) return null;
+        const ch = SB.channel('erp-live')
+            .on('postgres_changes',
+                { event: '*', schema: 'public', table: 'journals',
+                  filter: `store_id=in.(${storeIds.join(',')})` },
+                p => onJournalChange(p))
+            .on('postgres_changes',
+                { event: '*', schema: 'public', table: 'transfers',
+                  filter: `from_store_id=in.(${storeIds.join(',')})` },
+                p => onTransferChange(p))
+            .subscribe();
+        return ch;
+    }
+};
 function storageSizeKB(){ try { return Math.round((localStorage.getItem(STORAGE_KEY)||'').length/1024); } catch(e){ return 0; } }
 function audit(action, entity, entityId, payload){
     const u = currentUser();
@@ -534,7 +779,6 @@ const ENTITIES = {
     purchase: { key:'purchases', label:'Purchase', nameField:'id' },
     salesUp: { key:'salesUploads', label:'Sales Upload', nameField:'id' },
     transfer: { key:'transfers', label:'Transfer', nameField:'id' },
-    adjustment: { key:'adjustments', label:'Adjustment', nameField:'id' },
     user: { key:'users', label:'User', nameField:'username' }
 };
 function getDeleteBlockers(entityType, id){
@@ -588,10 +832,6 @@ function getDeleteBlockers(entityType, id){
     if (entityType === 'transfer') {
         const t = DB.transfers.find(x => x.id===id);
         if (t && t.status === 'Approved') blockers.push({ type:'Approved Transfer', count:1, preview:[t.id] });
-    }
-    if (entityType === 'adjustment') {
-        const a = DB.adjustments.find(x => x.id===id);
-        if (a && a.status === 'Approved') blockers.push({ type:'Approved Adjustment', count:1, preview:[a.id] });
     }
     return blockers;
 }
@@ -702,8 +942,14 @@ function scopeLabel(user){
     return '';
 }
 
+
 /* ---------- SESSION ---------- */
 function currentUser(){
+    // Cloud mode: use the cached logged-in profile
+    if (CLOUD_MODE === 'supabase') {
+        return window._cloudMe || null;
+    }
+    // Local mode: read from sessionStorage
     try {
         const raw = sessionStorage.getItem(SESSION_KEY);
         if (!raw) return null;
@@ -731,30 +977,71 @@ function pendingTransfersForMe(user){
     if (!u) return [];
     return DB.transfers.filter(t => t.status === 'Pending' && canApproveForStore(t.fromStoreId, u));
 }
-function pendingAdjustmentsForMe(user){
-    const u = user || currentUser();
-    if (!u) return [];
-    return DB.adjustments.filter(a => a.status === 'Pending' && canApproveForStore(a.storeId, u));
-}
 
 /* ---------- LOGIN ---------- */
-function doLogin(){
+async function doLogin(){
     try {
         const uname = document.getElementById('loginUser').value.trim().toLowerCase();
-        const pass = document.getElementById('loginPass').value;
-        const err = document.getElementById('loginError');
+        const pass  = document.getElementById('loginPass').value;
+        const err   = document.getElementById('loginError');
+
+        // ---------- Cloud auth ----------
+        if (CLOUD_MODE === 'supabase') {
+            // Accept both "admin" and "admin@drcafe.com"
+            const email = uname.includes('@') ? uname : (uname + '@drcafe.com');
+            const { data, error } = await SB.auth.signInWithPassword({ email, password: pass });
+            if (error) {
+                err.textContent = 'Invalid email or password.';
+                err.style.display = 'block';
+                return;
+            }
+         err.style.display = 'none';
+         DB = await loadData();
+         window._cloudMe = DB.users.find(u => (u.email||'').toLowerCase() === email.toLowerCase()) || null;
+         await bootApp();
+         return;
+        }
+
+        // ---------- Local auth ----------
         const user = DB.users.find(u => u.username===uname && u.pass===pass && u.active);
         if (!user) { err.textContent = 'Invalid username or password.'; err.style.display='block'; return; }
         err.style.display = 'none';
         setSession(uname);
-        bootApp();
-    } catch(e) { document.getElementById('loginError').textContent = 'Error: ' + e.message; document.getElementById('loginError').style.display='block'; }
+        await bootApp();
+    } catch(e) {
+        document.getElementById('loginError').textContent = 'Error: ' + e.message;
+        document.getElementById('loginError').style.display = 'block';
+    }
 }
-function doLogout(){ clearSession(); location.reload(); }
+async function doLogout(){
+    if (CLOUD_MODE === 'supabase') {
+        try { await SB.auth.signOut(); } catch(e) {}
+    }
+    clearSession();
+    location.reload();
+}
 
-function bootApp(){
-    const u = currentUser();
-    if (!u) { document.getElementById('loginScreen').style.display='flex'; document.getElementById('appScreen').style.display='none'; return; }
+async function bootApp(){
+    // Cloud: check Supabase session first
+    if (CLOUD_MODE === 'supabase') {
+        const { data: { session } } = await SB.auth.getSession();
+        if (!session) {
+            document.getElementById('loginScreen').style.display = 'flex';
+            document.getElementById('appScreen').style.display = 'none';
+            return;
+        }
+   DB = await loadData();
+const { data: { user: authUser } } = await SB.auth.getUser();
+window._cloudMe = authUser ? (DB.users.find(u => u.id === authUser.id) || null) : null;
+}
+
+const u = currentUser();
+    if (!u) {
+        document.getElementById('loginScreen').style.display = 'flex';
+        document.getElementById('appScreen').style.display = 'none';
+        return;
+    }
+
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('appScreen').style.display = 'block';
     document.getElementById('userName').textContent = u.name;
@@ -762,6 +1049,57 @@ function bootApp(){
     document.getElementById('userAvatar').textContent = u.initials || '??';
     renderSidebar();
     showPage('dashboard');
+
+    // Realtime: live updates on journals + transfers
+    // Show password-change banner if needed
+    const pb = document.getElementById('pwBanner');
+    if (pb) pb.style.display = (u.mustChangePassword ? 'block' : 'none');
+    DataLayer.subscribeToChanges(
+        u,
+        (payload) => {
+            toast('Live: journal ' + (payload.new?.id || payload.old?.id) + ' updated', 'success');
+            if (currentPageKey() === 'dashboard' || currentPageKey() === 'daily'
+                || currentPageKey() === 'weekly' || currentPageKey() === 'closing') {
+                showPage(currentPageKey());
+            }
+        },
+        (payload) => {
+            toast('Live: transfer ' + (payload.new?.id || payload.old?.id) + ' updated', 'success');
+            renderSidebar();
+            if (currentPageKey() === 'transfers') showPage('transfers');
+        }
+    );
+}
+function openChangePassword(){
+    openModal('Change Password', `
+        <div class="form-row"><label>New Password</label>
+            <input type="password" id="newPw1" placeholder="At least 6 characters"></div>
+        <div class="form-row"><label>Confirm Password</label>
+            <input type="password" id="newPw2" placeholder="Repeat"></div>
+    `, `
+        <button class="btn-light" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" onclick="saveNewPassword()">Update Password</button>
+    `);
+}
+
+async function saveNewPassword(){
+    const p1 = document.getElementById('newPw1').value;
+    const p2 = document.getElementById('newPw2').value;
+    if (p1.length < 6) { toast('Password must be at least 6 characters', 'error'); return; }
+    if (p1 !== p2) { toast('Passwords do not match', 'error'); return; }
+    try {
+        if (CLOUD_MODE === 'supabase') {
+            const { error } = await SB.auth.updateUser({ password: p1 });
+            if (error) throw error;
+            const me = await DataLayer.me();
+            await SB.from('profiles').update({ must_change_password: false }).eq('id', me.id);
+        }
+        toast('Password updated', 'success');
+        closeModal();
+        document.getElementById('pwBanner').style.display = 'none';
+    } catch(err) {
+        toast('Failed: ' + (err.message || err), 'error');
+    }
 }
 
 /* ---------- SIDEBAR ---------- */
@@ -776,7 +1114,6 @@ const MENU_STRUCTURE = [
     { id:'weekly', icon:'◫', label:'Weekly Inventory' },
     { id:'closing', icon:'▣', label:'Closing Inventory' },
     { id:'transfers', icon:'⇄', label:'Stock Transfers' },
-    { id:'adjustments', icon:'±', label:'Adjustments' },
     { section:'Master Data' },
     { id:'items', icon:'▤', label:'Item Master' },
     { id:'bom', icon:'⌘', label:'BOM / Recipes' },
@@ -793,7 +1130,6 @@ function renderSidebar(){
     const u = currentUser();
     const allowed = PERMISSIONS[u.role] || [];
     const tCount = pendingTransfersForMe(u).length;
-    const aCount = pendingAdjustmentsForMe(u).length;
     let html = '';
     MENU_STRUCTURE.forEach(m => {
         if (m.section) {
@@ -805,7 +1141,6 @@ function renderSidebar(){
             if (!allowed.includes(m.id)) return;
             let pill = '';
             if (m.id === 'transfers' && tCount > 0) pill = `<span class="menu-pill">${tCount}</span>`;
-            if (m.id === 'adjustments' && aCount > 0) pill = `<span class="menu-pill">${aCount}</span>`;
             html += `<div class="menu-item" data-page="${m.id}" onclick="showPage('${m.id}')">
                         <div class="menu-icon">${m.icon}</div>
                         <span>${m.label}</span>
@@ -821,7 +1156,7 @@ const TITLES = {
     dashboard:'Inventory Dashboard', opening:'Opening Stock (Month Start)',
     purchases:'Purchases', sales:'Sales Upload (BOM Explosion)',
     daily:'Daily Inventory', weekly:'Weekly Inventory', closing:'Closing Inventory',
-    transfers:'Stock Transfers', adjustments:'Stock Adjustments',
+    transfers:'Stock Transfers',
     items:'Item Master', bom:'BOM / Recipe Management', stores:'Store Master',
     employees:'Employee Master', reports:'Reports & Analytics', users:'User Management',
     recycle:'Recycle Bin', backup:'Backup / Restore'
@@ -957,30 +1292,6 @@ function sumTransfersInSince(storeId, itemId, sinceISO){
     });
     return sum;
 }
-function sumAdjustmentsInRange(storeId, itemId, startISO, endISO){
-    let net = 0;
-    DB.adjustments.forEach(a => {
-        if (a.storeId !== storeId || a.status !== 'Approved' || !a.approvedAt) return;
-        const d = a.approvedAt.slice(0,10);
-        if (d < startISO) return;
-        if (endISO && d > endISO) return;
-        const sign = a.type === 'Surplus' ? 1 : -1;
-        a.lines.forEach(l => { if (l.itemId === itemId) net += sign * (Number(l.qty)||0); });
-    });
-    return net;
-}
-function sumAdjustmentsSince(storeId, itemId, sinceISO){
-    let net = 0;
-    DB.adjustments.forEach(a => {
-        if (a.storeId !== storeId || a.status !== 'Approved' || !a.approvedAt) return;
-        if (a.approvedAt < sinceISO) return;
-        const sign = a.type === 'Surplus' ? 1 : -1;
-        a.lines.forEach(l => { if (l.itemId === itemId) net += sign * (Number(l.qty)||0); });
-    });
-    return net;
-}
-
-/* SHIFT REMOVED — matching now only by date / week / month */
 function ledgerMatchesJournal(c, journal){
     if (!c || c.storeId !== journal.storeId) return false;
     const type = c.inventoryType || 'daily';
@@ -1024,7 +1335,7 @@ function buildCountLines(journal){
         return false;
     });
     let openingSource = { source:'month-opening', journal:null };
-    let purchaseFn, tInFn, tOutFn, adjFn, consFn;
+    let purchaseFn, tInFn, tOutFn, consFn;
     if (type === 'daily' || type === 'weekly') {
         const lastJ = getLastJournalForStore(storeId, journal.createdAt || nowISO());
         if (lastJ) {
@@ -1032,19 +1343,16 @@ function buildCountLines(journal){
             purchaseFn = (id) => sumPurchasesSince(storeId, id, lastJ.createdAt);
             tInFn      = (id) => sumTransfersInSince(storeId, id, lastJ.createdAt);
             tOutFn     = (id) => sumTransfersOutSince(storeId, id, lastJ.createdAt);
-            adjFn      = (id) => sumAdjustmentsSince(storeId, id, lastJ.createdAt);
         } else {
             purchaseFn = (id) => sumPurchasesInRange(storeId, id, monthStart, journal.date);
             tInFn      = (id) => sumTransfersInInRange(storeId, id, monthStart, journal.date);
             tOutFn     = (id) => sumTransfersOutInRange(storeId, id, monthStart, journal.date);
-            adjFn      = (id) => sumAdjustmentsInRange(storeId, id, monthStart, journal.date);
         }
         consFn = (id) => sumConsumptionTagged(storeId, id, journal);
     } else {
         purchaseFn = (id) => sumPurchasesInRange(storeId, id, monthStart, monthEnd);
         tInFn      = (id) => sumTransfersInInRange(storeId, id, monthStart, monthEnd);
         tOutFn     = (id) => sumTransfersOutInRange(storeId, id, monthStart, monthEnd);
-        adjFn      = (id) => sumAdjustmentsInRange(storeId, id, monthStart, monthEnd);
         consFn     = (id) => sumMTDConsumption(storeId, id, journal);
     }
     return {
@@ -1060,20 +1368,18 @@ function buildCountLines(journal){
             const purchases = purchaseFn(it.id);
             const tIn = tInFn(it.id);
             const tOut = tOutFn(it.id);
-            const adj = adjFn(it.id);
             const consumption = consFn(it.id);
-            const expected = opening + purchases + tIn - tOut + adj - consumption;
+            const expected = opening + purchases + tIn - tOut - consumption;
             const mtdPurch = sumPurchasesInRange(storeId, it.id, monthStart, journal.date);
             const mtdTIn   = sumTransfersInInRange(storeId, it.id, monthStart, journal.date);
             const mtdTOut  = sumTransfersOutInRange(storeId, it.id, monthStart, journal.date);
-            const mtdAdj   = sumAdjustmentsInRange(storeId, it.id, monthStart, journal.date);
             const mtdCons  = sumMTDConsumption(storeId, it.id, journal);
             return {
                 itemId: it.id, uom: it.uom,
-                opening, purchases, transfersIn: tIn, transfersOut: tOut, adjustments: adj, consumption, expected,
+                opening, purchases, transfersIn: tIn, transfersOut: tOut, consumption, expected,
                 physical: 0, variance: 0,
                 mtdPurchases: mtdPurch, mtdTransfersIn: mtdTIn, mtdTransfersOut: mtdTOut,
-                mtdAdjustments: mtdAdj, mtdConsumption: mtdCons
+                mtdConsumption: mtdCons
             };
         }),
         openingSource
@@ -1133,10 +1439,10 @@ function applySalesPrefill(){
 }
 
 /* ============================================================
-   RENDERERS (continued in Part 3)
+   RENDERERS
    ============================================================ */
 const RENDERERS = {};
-/* ---------- DASHBOARD ---------- */
+
 RENDERERS.dashboard = function(){
     const u = currentUser();
     const myStoreIds = new Set(getMyStores());
@@ -1146,20 +1452,18 @@ RENDERERS.dashboard = function(){
     const sizePct = Math.min(100, (sizeKB/5120)*100);
     const barClass = sizePct>85?'danger':sizePct>60?'warn':'';
     const tPending = pendingTransfersForMe(u).length;
-    const aPending = pendingAdjustmentsForMe(u).length;
-    const totalPending = tPending + aPending;
     return `
     <div class="scope-banner"><b>Scope:</b> ${esc(scopeLabel(u))} &nbsp;·&nbsp; ${myStoreIds.size} store(s) visible</div>
-    ${totalPending > 0 ? `
+    ${tPending > 0 ? `
         <div class="pending-banner">
-            <span>⚠ You have <b>${totalPending}</b> pending approval${totalPending>1?'s':''} waiting for you.</span>
-            <span class="count">${totalPending}</span>
+            <span>⚠ You have <b>${tPending}</b> pending transfer approval${tPending>1?'s':''} waiting for you.</span>
+            <span class="count">${tPending}</span>
         </div>
     ` : ''}
     <div class="cards">
         <div class="card"><div class="card-label">Stores in Scope</div><div class="card-value">${visibleStores.length}</div></div>
         <div class="card"><div class="card-label">Inventory Journals</div><div class="card-value green">${visibleJournals.length}</div></div>
-        <div class="card"><div class="card-label">Pending Approvals</div><div class="card-value orange">${totalPending}</div></div>
+        <div class="card"><div class="card-label">Pending Transfers</div><div class="card-value orange">${tPending}</div></div>
         <div class="card"><div class="card-label">BOMs</div><div class="card-value">${DB.bom.length}</div></div>
     </div>
     ${DB.stores.length === 0 ? `
@@ -1558,11 +1862,11 @@ function onUserRoleChange(){
     storeBlock.style.display = (role === 'store') ? 'block' : 'none';
     infoBlock.style.display = 'none';
     const name = document.getElementById('uName')?.value || '(name)';
-    if (role === 'area') { infoBlock.style.display = 'block'; infoText.innerHTML = `Will see stores where Area Manager = "<b>${esc(name)}</b>". Approves transfers and adjustments for those stores.`; }
+    if (role === 'area') { infoBlock.style.display = 'block'; infoText.innerHTML = `Will see stores where Area Manager = "<b>${esc(name)}</b>". Approves stock transfers for those stores.`; }
     else if (role === 'opmanager') { infoBlock.style.display = 'block'; infoText.innerHTML = `Will see stores where Op Manager = "<b>${esc(name)}</b>".`; }
     else if (role === 'admin' || role === 'wh' || role === 'viewer') { infoBlock.style.display = 'block'; infoText.innerHTML = `Will see <b>all stores</b>${role==='admin'?'. Admin can approve anything.':''}`; }
 }
-function saveUser(editId){
+async function saveUser(editId){
     const username = document.getElementById('uUsername').value.trim().toLowerCase();
     const password = document.getElementById('uPassword').value;
     const name = document.getElementById('uName').value.trim();
@@ -1595,14 +1899,39 @@ function saveUser(editId){
             document.getElementById('userAvatar').textContent = u.initials || '??';
         }
     } else {
-        const newUser = { id: uid('u'), username, pass: password, name, initials, role, active:true, createdAt:nowISO() };
+        const email = username.includes('@') ? username : (username + '@drcafe.com');
+
         if (role === 'store') {
             const sid = document.getElementById('uStore').value;
             if (!sid) { toast('Select a store', 'error'); return; }
-            newUser.storeId = sid;
         }
+
+        if (CLOUD_MODE === 'supabase') {
+            // Call the Edge Function to create the auth user
+            const { data, error } = await SB.functions.invoke('create-user', {
+                body: {
+                    email,
+                    password,
+                    name,
+                    initials,
+                    role,
+                    storeId: (role === 'store') ? document.getElementById('uStore').value : null
+                }
+            });
+            if (error) { toast('Create failed: ' + (error.message || error), 'error'); return; }
+            audit('CREATE','user',data.id || email,{ email, role });
+            closeModal();
+            toast(`User created. Email: ${email} — Password: ${password}`, 'success');
+            DB = await loadData();
+            showPage('users');
+            return;
+        }
+
+        // Local mode fallback
+        const newUser = { id: uid('u'), username: email, pass: password, name, initials, role, active:true, createdAt:nowISO() };
+        if (role === 'store') newUser.storeId = document.getElementById('uStore').value;
         DB.users.push(newUser);
-        audit('CREATE','user',newUser.id,{ username, role });
+        audit('CREATE','user',newUser.id,{ email, role });
         saveData(); closeModal(); toast('User created', 'success');
     }
     showPage('users');
@@ -1929,8 +2258,9 @@ RENDERERS.transfers = function(){
             <option value="">All Stores</option>
             ${myStores.map(s => `<option value="${s.id}">${s.code} — ${esc(s.name)}</option>`).join('')}
         </select>
-        ${canCreate && myStores.length >= 2 ? `<button class="btn-primary" onclick="openTransferModal()">+ New Transfer</button>` : ''}
+        ${canCreate ? `<button class="btn-primary" onclick="openTransferModal()">+ New Transfer</button>` : ''}
     </div>
+    ${myStores.length < 2 && canCreate ? `<div class="warn-box">⚠ You need access to at least <b>2 stores</b> to create a transfer. Ask admin to assign you to more stores.</div>` : ''}
     <div class="panel">
         <div class="panel-header"><div class="panel-title">Stock Transfers</div>
         <span class="badge badge-blue">${rows.length}</span></div>
@@ -1981,7 +2311,18 @@ function filterTransfers(){
 function openTransferModal(editId){
     const u = currentUser();
     const myStores = getMyStoreObjects(u);
-    if (myStores.length < 2) { toast('You need access to at least 2 stores.', 'error'); return; }
+    if (myStores.length < 2) {
+        openModal('Cannot Create Transfer', `
+            <div class="dep-warning">
+                <div style="font-weight:bold;margin-bottom:8px">🚫 Need at least 2 stores in your scope</div>
+                <div style="font-size:13px;line-height:1.8">
+                    You currently have access to <b>${myStores.length}</b> store(s).<br>
+                    Ask an <b>Administrator</b> to assign you to at least 2 stores.
+                </div>
+            </div>
+        `, `<button class="btn-light" onclick="closeModal()">Close</button>`);
+        return;
+    }
     const editing = editId ? DB.transfers.find(t => t.id === editId) : null;
     if (editing && editing.status === 'Approved') { toast('Approved transfers cannot be edited.', 'error'); return; }
     const fromOptions = myStores.map(s => `<option value="${s.id}" ${editing && editing.fromStoreId===s.id?'selected':''}>${s.code} — ${esc(s.name)}</option>`).join('');
@@ -2106,21 +2447,29 @@ function saveTransfer(editId){
     }
     showPage('transfers');
 }
-function approveTransfer(id){
+async function approveTransfer(id){
     const u = currentUser();
     const t = DB.transfers.find(x => x.id === id);
     if (!t) { toast('Not found', 'error'); return; }
     if (t.status !== 'Pending') { toast('Only pending transfers can be approved', 'error'); return; }
     if (!canApproveForStore(t.fromStoreId, u)) { toast('Only the assigned Area Manager can approve.', 'error'); return; }
-    if (!confirm(`Approve transfer ${t.id}?\n\nSource: ${storeLabel(t.fromStoreId)}\nDestination: ${storeLabel(t.toStoreId)}\n\nApproval will move inventory immediately.`)) return;
-    t.status = 'Approved';
-    t.approvedAt = nowISO();
-    t.approvedById = u.id;
-    t.approvedByName = u.name;
-    audit('APPROVE','transfer',id,{ });
-    saveData();
-    toast(`Transfer ${id} approved — inventory updated`, 'success');
-    showPage('transfers');
+    if (!confirm(`Approve transfer ${t.id}?\n\nSource: ${storeLabel(t.fromStoreId)}\n\nDestination: ${storeLabel(t.toStoreId)}\n\nApproval will move inventory immediately.`)) return;
+
+    try {
+        if (CLOUD_MODE === 'supabase') {
+            await DataLayer.approveTransfer(id, u);
+        }
+        t.status = 'Approved';
+        t.approvedAt = nowISO();
+        t.approvedById = u.id;
+        t.approvedByName = u.name;
+        audit('APPROVE','transfer',id,{ });
+        saveData();
+        toast(`Transfer ${id} approved — inventory updated`, 'success');
+        showPage('transfers');
+    } catch(err) {
+        toast('Approve failed: ' + (err.message || err), 'error');
+    }
 }
 function rejectTransfer(id){
     const u = currentUser();
@@ -2174,279 +2523,7 @@ function viewTransfer(id){
     document.getElementById('modalOverlay').classList.add('show');
 }
 
-/* ---------- ADJUSTMENTS ---------- */
-RENDERERS.adjustments = function(){
-    const u = currentUser();
-    const canCreate = can('createAdjustment');
-    const myStoreIds = new Set(getMyStores(u));
-    const myStores = DB.stores.filter(s => myStoreIds.has(s.id));
-    let rows = DB.adjustments.filter(a => myStoreIds.has(a.storeId)).slice().reverse();
-    const pendingForMe = pendingAdjustmentsForMe(u).length;
-    return `
-    <div class="scope-banner"><b>Scope:</b> ${esc(scopeLabel(u))}</div>
-    ${pendingForMe > 0 ? `<div class="pending-banner">
-            <span>⚠ <b>${pendingForMe}</b> adjustment${pendingForMe>1?'s':''} waiting for your approval.</span>
-            <span class="count">${pendingForMe}</span>
-        </div>` : ''}
-    <div class="toolbar">
-        <select id="adjStatusFilter" onchange="filterAdjustments()">
-            <option value="">All Status</option>
-            <option>Pending</option>
-            <option>Approved</option>
-            <option>Rejected</option>
-        </select>
-        <select id="adjStoreFilter" onchange="filterAdjustments()">
-            <option value="">All Stores</option>
-            ${myStores.map(s => `<option value="${s.id}">${s.code} — ${esc(s.name)}</option>`).join('')}
-        </select>
-        ${canCreate && myStores.length > 0 ? `<button class="btn-primary" onclick="openAdjustmentModal()">+ New Adjustment</button>` : ''}
-    </div>
-    <div class="panel">
-        <div class="panel-header"><div class="panel-title">Stock Adjustments</div>
-        <span class="badge badge-blue">${rows.length}</span></div>
-        <div class="panel-body" id="adjTableBody">${renderAdjustmentsTable(rows)}</div>
-    </div>`;
-};
-function renderAdjustmentsTable(rows){
-    if (rows.length === 0) return '<div class="empty">No adjustments yet</div>';
-    const u = currentUser();
-    return `<table>
-        <thead><tr>
-            <th>Adjustment</th><th>Date</th><th>Store</th><th>Type</th><th>Reason</th>
-            <th>Items</th><th>Requested By</th><th>Status</th><th>Approved By</th><th>Actions</th>
-        </tr></thead>
-        <tbody>${rows.map(a => {
-            const canApprove = a.status === 'Pending' && canApproveForStore(a.storeId, u);
-            return `<tr>
-                <td><b>${esc(a.id)}</b></td>
-                <td>${esc(a.date)}</td>
-                <td>${esc(storeLabel(a.storeId))}</td>
-                <td>${badge(a.type)}</td>
-                <td>${esc(a.reason)}</td>
-                <td>${a.lines.length} line(s)</td>
-                <td>${esc(a.byName)}</td>
-                <td>${badge(a.status)}</td>
-                <td>${a.approvedByName ? esc(a.approvedByName) : '<span style="color:#9ca3af">—</span>'}</td>
-                <td class="actions-cell">
-                    <button class="btn-light btn-xs" onclick="viewAdjustment('${a.id}')">View</button>
-                    ${canApprove ? `
-                        <button class="btn-success btn-xs" onclick="approveAdjustment('${a.id}')">Approve</button>
-                        <button class="btn-danger btn-xs" onclick="rejectAdjustment('${a.id}')">Reject</button>
-                    ` : ''}
-                    ${a.status !== 'Approved' ? deleteBtn('adjustment', a.id) : ''}
-                </td>
-            </tr>`;
-        }).join('')}</tbody>
-    </table>`;
-}
-function filterAdjustments(){
-    const sf = document.getElementById('adjStatusFilter').value;
-    const st = document.getElementById('adjStoreFilter').value;
-    const u = currentUser();
-    const myStoreIds = new Set(getMyStores(u));
-    let rows = DB.adjustments.filter(a => myStoreIds.has(a.storeId));
-    if (sf) rows = rows.filter(a => a.status === sf);
-    if (st) rows = rows.filter(a => a.storeId === st);
-    document.getElementById('adjTableBody').innerHTML = renderAdjustmentsTable(rows.slice().reverse());
-}
-function openAdjustmentModal(editId){
-    const u = currentUser();
-    const myStores = getMyStoreObjects(u);
-    if (myStores.length === 0) { toast('No stores in scope.', 'error'); return; }
-    const editing = editId ? DB.adjustments.find(a => a.id === editId) : null;
-    if (editing && editing.status === 'Approved') { toast('Approved adjustments cannot be edited.', 'error'); return; }
-    const storeOptions = myStores.map(s => `<option value="${s.id}" ${editing && editing.storeId===s.id?'selected':''}>${s.code} — ${esc(s.name)}</option>`).join('');
-    window._workingAdjustment = {
-        id: editing ? editing.id : null,
-        date: editing ? editing.date : todayISO(),
-        storeId: editing ? editing.storeId : myStores[0].id,
-        type: editing ? editing.type : 'Loss',
-        reason: editing ? editing.reason : ADJUSTMENT_REASONS[0],
-        notes: editing ? (editing.notes || '') : '',
-        lines: editing ? JSON.parse(JSON.stringify(editing.lines)) : []
-    };
-    openModal(editing ? 'Edit Adjustment' : 'New Stock Adjustment', `
-        <div class="info-block">
-            <b>Approval flow:</b> Submit → <b>Pending</b>. The <b>Area Manager</b> assigned to the store approves. Approval = inventory updated.
-        </div>
-        <div class="form-grid">
-            <div class="form-row"><label>Date</label>
-                <input type="date" id="aDate" value="${window._workingAdjustment.date}"></div>
-            <div class="form-row"><label>Type</label>
-                <select id="aType" onchange="window._workingAdjustment.type=this.value">
-                    <option value="Loss" ${window._workingAdjustment.type==='Loss'?'selected':''}>Loss (reduce stock)</option>
-                    <option value="Surplus" ${window._workingAdjustment.type==='Surplus'?'selected':''}>Surplus (increase stock)</option>
-                </select></div>
-        </div>
-        <div class="form-row"><label>Store</label>
-            <select id="aStore" onchange="window._workingAdjustment.storeId=this.value">${storeOptions}</select></div>
-        <div class="form-row"><label>Reason</label>
-            <select id="aReason" onchange="window._workingAdjustment.reason=this.value">
-                ${ADJUSTMENT_REASONS.map(r => `<option ${r===window._workingAdjustment.reason?'selected':''}>${esc(r)}</option>`).join('')}
-            </select></div>
-        <div class="form-row"><label style="display:flex;justify-content:space-between">
-            <span>Items *</span>
-            <button type="button" class="btn-light btn-sm" onclick="addAdjustmentLine()">+ Add Item</button>
-        </label>
-            <div class="line-editor">
-                <table>
-                    <thead><tr>
-                        <th style="width:50%">Item</th>
-                        <th style="width:15%">Qty</th>
-                        <th style="width:15%">UOM</th>
-                        <th style="width:20%"></th>
-                    </tr></thead>
-                    <tbody id="adjustmentLines"></tbody>
-                </table>
-            </div>
-        </div>
-        <div class="form-row"><label>Notes</label>
-            <textarea id="aNotes" placeholder="Optional">${editing ? esc(editing.notes||'') : ''}</textarea></div>
-    `, `
-        <button class="btn-light" onclick="closeModal()">Cancel</button>
-        <button class="btn-primary" onclick="saveAdjustment('${editId||''}')">${editing?'Save Changes':'Submit for Approval'}</button>
-    `);
-    renderAdjustmentLines();
-}
-function addAdjustmentLine(){ window._workingAdjustment.lines.push({ itemId:'', qty:0, uom:'' }); renderAdjustmentLines(); }
-function removeAdjustmentLine(idx){ window._workingAdjustment.lines.splice(idx, 1); renderAdjustmentLines(); }
-function renderAdjustmentLines(){
-    const lines = window._workingAdjustment.lines;
-    const tbody = document.getElementById('adjustmentLines');
-    if (!tbody) return;
-    if (lines.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:20px">No lines</td></tr>';
-        return;
-    }
-    const activeItems = DB.items.filter(i => i.status === 'Active');
-    tbody.innerHTML = lines.map((l, idx) => {
-        const item = getItem(l.itemId);
-        return `<tr>
-            <td>
-                <select onchange="updateAdjustmentLine(${idx},'itemId',this.value)">
-                    <option value="">— Select item —</option>
-                    ${activeItems.map(i => `<option value="${i.id}" ${i.id===l.itemId?'selected':''}>${esc(i.code)} — ${esc(i.name)}</option>`).join('')}
-                </select>
-            </td>
-            <td><input type="number" step="0.01" min="0" value="${l.qty}" oninput="updateAdjustmentLine(${idx},'qty',this.value)"></td>
-            <td><input value="${esc(item?item.uom:l.uom)}" readonly style="background:#f9fafb"></td>
-            <td><button type="button" class="btn-danger btn-xs" onclick="removeAdjustmentLine(${idx})">✕</button></td>
-        </tr>`;
-    }).join('');
-}
-function updateAdjustmentLine(idx, field, value){
-    const l = window._workingAdjustment.lines[idx];
-    if (!l) return;
-    if (field === 'qty') l.qty = Number(value) || 0;
-    else if (field === 'itemId') { const it = getItem(value); l.itemId = value; l.uom = it ? it.uom : ''; renderAdjustmentLines(); }
-}
-function saveAdjustment(editId){
-    const a = window._workingAdjustment;
-    a.date = document.getElementById('aDate').value;
-    a.notes = document.getElementById('aNotes').value.trim();
-    if (!a.date) { toast('Date required', 'error'); return; }
-    if (!a.storeId) { toast('Store required', 'error'); return; }
-    const valid = a.lines.filter(l => l.itemId && l.qty > 0);
-    if (valid.length === 0) { toast('Add at least one item with qty > 0', 'error'); return; }
-    const u = currentUser();
-    if (editId) {
-        const rec = DB.adjustments.find(x => x.id === editId);
-        if (!rec) { toast('Not found', 'error'); return; }
-        if (rec.status === 'Approved') { toast('Approved adjustments cannot be edited', 'error'); return; }
-        rec.date = a.date; rec.notes = a.notes;
-        rec.storeId = a.storeId; rec.type = a.type; rec.reason = a.reason;
-        rec.lines = valid.map(l => ({ itemId: l.itemId, qty: l.qty, uom: l.uom }));
-        audit('UPDATE','adjustment',rec.id,{ });
-        saveData(); closeModal(); toast('Adjustment updated', 'success');
-    } else {
-        const id = nextMovementId('ADJ', DB.adjustments, a.date);
-        DB.adjustments.push({
-            id, date: a.date,
-            storeId: a.storeId,
-            type: a.type,
-            reason: a.reason,
-            notes: a.notes,
-            lines: valid.map(l => ({ itemId: l.itemId, qty: l.qty, uom: l.uom })),
-            status: 'Pending',
-            byId: u.id, byName: u.name,
-            createdAt: nowISO(),
-            approvedAt: null, approvedById: null, approvedByName: null,
-            rejectedAt: null, rejectedById: null, rejectedByName: null
-        });
-        audit('CREATE','adjustment',id,{ store:a.storeId, type:a.type, lines:valid.length });
-        saveData(); closeModal(); toast(`Adjustment ${id} submitted for approval`, 'success');
-    }
-    showPage('adjustments');
-}
-function approveAdjustment(id){
-    const u = currentUser();
-    const a = DB.adjustments.find(x => x.id === id);
-    if (!a) return;
-    if (a.status !== 'Pending') { toast('Only pending adjustments can be approved', 'error'); return; }
-    if (!canApproveForStore(a.storeId, u)) { toast('Only the assigned Area Manager can approve.', 'error'); return; }
-    if (!confirm(`Approve adjustment ${a.id}?\n\nStore: ${storeLabel(a.storeId)}\nType: ${a.type}\nReason: ${a.reason}\n\nApproval will update inventory immediately.`)) return;
-    a.status = 'Approved';
-    a.approvedAt = nowISO();
-    a.approvedById = u.id;
-    a.approvedByName = u.name;
-    audit('APPROVE','adjustment',id,{ });
-    saveData();
-    toast(`Adjustment ${id} approved — inventory updated`, 'success');
-    showPage('adjustments');
-}
-function rejectAdjustment(id){
-    const u = currentUser();
-    const a = DB.adjustments.find(x => x.id === id);
-    if (!a) return;
-    if (a.status !== 'Pending') { toast('Only pending adjustments can be rejected', 'error'); return; }
-    if (!canApproveForStore(a.storeId, u)) { toast('Only the assigned Area Manager can reject.', 'error'); return; }
-    const reason = prompt('Reason for rejecting (optional):') || '';
-    a.status = 'Rejected';
-    a.rejectedAt = nowISO();
-    a.rejectedById = u.id;
-    a.rejectedByName = u.name;
-    a.rejectReason = reason;
-    audit('REJECT','adjustment',id,{ reason });
-    saveData();
-    toast(`Adjustment ${id} rejected`, 'error');
-    showPage('adjustments');
-}
-function viewAdjustment(id){
-    const a = DB.adjustments.find(x => x.id === id);
-    if (!a) return;
-    const modalBox = document.getElementById('modalBox');
-    modalBox.className = 'modal modal-wide';
-    document.getElementById('modalTitle').innerHTML = `Adjustment <span style="color:#2563eb">${esc(a.id)}</span> ${badge(a.status)}`;
-    document.getElementById('modalBody').innerHTML = `
-        <div class="journal-meta">
-            <div><div class="k">Date</div><div class="v">${esc(a.date)}</div></div>
-            <div><div class="k">Store</div><div class="v">${esc(storeLabel(a.storeId))}</div></div>
-            <div><div class="k">Type</div><div class="v">${esc(a.type)}</div></div>
-            <div><div class="k">Reason</div><div class="v">${esc(a.reason)}</div></div>
-            <div><div class="k">Requested By</div><div class="v">${esc(a.byName)}</div></div>
-            <div><div class="k">Status</div><div class="v">${esc(a.status)}</div></div>
-            <div><div class="k">Approved By</div><div class="v">${esc(a.approvedByName || '—')}</div></div>
-            <div><div class="k">Approved At</div><div class="v" style="font-size:12px">${a.approvedAt ? new Date(a.approvedAt).toLocaleString() : '—'}</div></div>
-        </div>
-        ${a.notes ? `<div class="info-block"><b>Notes:</b> ${esc(a.notes)}</div>` : ''}
-        ${a.rejectReason ? `<div class="dep-warning"><b>Reject reason:</b> ${esc(a.rejectReason)}</div>` : ''}
-        <table>
-            <thead><tr><th>Item</th><th>UOM</th><th style="text-align:right">Qty</th></tr></thead>
-            <tbody>${a.lines.map(l => {
-                const it = getItem(l.itemId);
-                return `<tr>
-                    <td>${esc(it?it.code+' — '+it.name:'?')}</td>
-                    <td>${esc(l.uom)}</td>
-                    <td style="text-align:right"><b>${fmtNum(l.qty)}</b></td>
-                </tr>`;
-            }).join('')}</tbody>
-        </table>
-    `;
-    document.getElementById('modalFooter').innerHTML = `<button class="btn-light" onclick="closeModal()">Close</button>`;
-    document.getElementById('modalOverlay').classList.add('show');
-}
-
-/* ---------- SALES UPLOAD (shift removed) ---------- */
+/* ---------- SALES UPLOAD ---------- */
 RENDERERS.sales = function(){
     const u = currentUser();
     const canUpload = can('uploadSales');
@@ -2465,7 +2542,7 @@ RENDERERS.sales = function(){
     <div class="panel">
         <div class="panel-header"><div class="panel-title">Upload Sales Excel</div></div>
         <div class="panel-body">
-            <div class="upload-options two-col">
+            <div class="upload-options">
                 <div class="form-row">
                     <label>Batch Date</label>
                     <input type="date" id="salesBatchDate" value="${defaultDate}">
@@ -2734,7 +2811,7 @@ function viewSalesUpload(id){
     document.getElementById('modalOverlay').classList.add('show');
 }
 
-/* ---------- INVENTORY (daily/weekly/closing) ---------- */
+/* ---------- INVENTORY ---------- */
 function renderCountPage(type){
     const u = currentUser();
     const canCreate = type==='closing' ? can('createClosing') : can('createInventory');
@@ -2757,8 +2834,9 @@ function renderCountPage(type){
             <option value="">All Stores (in scope)</option>
             ${myStores.map(s => `<option value="${s.id}">${s.code} — ${esc(s.name)}</option>`).join('')}
         </select>
-        ${canCreate && myStores.length > 0 ? `<button class="btn-primary" onclick="openCountSetup('${type}')">+ New ${title}</button>` : ''}
+        ${canCreate ? `<button class="btn-primary" onclick="openCountSetup('${type}')">+ New ${title}</button>` : ''}
     </div>
+    ${myStores.length === 0 && canCreate ? `<div class="warn-box">⚠ No stores in your scope yet. Ask an admin to assign you to a store, or add stores in <b>Store Master</b>.</div>` : ''}
     <div class="panel">
         <div class="panel-header"><div class="panel-title">${title} Journals</div>
         <span class="badge badge-blue">${journals.length} journals</span></div>
@@ -2813,7 +2891,18 @@ function findDuplicateJournal(journal){
 function openCountSetup(type){
     const u = currentUser();
     const myStores = getMyStoreObjects(u);
-    if (myStores.length === 0) { toast('No stores in scope.', 'error'); return; }
+    if (myStores.length === 0) {
+        openModal('Cannot Create Inventory', `
+            <div class="dep-warning">
+                <div style="font-weight:bold;margin-bottom:8px">🚫 No stores in your scope</div>
+                <div style="font-size:13px;line-height:1.8">
+                    You are not assigned to any active store (or no stores exist yet).<br>
+                    Ask an <b>Administrator</b> to assign you to a store, or add stores in <b>Store Master</b>.
+                </div>
+            </div>
+        `, `<button class="btn-light" onclick="closeModal()">Close</button>`);
+        return;
+    }
     if (DB.items.length === 0) { toast('Add items first.', 'error'); return; }
     const today = todayISO();
     const title = { daily:'Daily', weekly:'Weekly', closing:'Closing' }[type];
@@ -2867,8 +2956,7 @@ function startCount(type){
     openCountSheet();
 }
 function showNoSalesGate(header){
-    const tagLabel = header.type === 'daily' ? `Daily`
-        : header.type === 'weekly' ? `Weekly · ${header.week}` : `Closing · ${header.month}`;
+    const tagLabel = header.type === 'daily' ? `Daily` : header.type === 'weekly' ? `Weekly · ${header.week}` : `Closing · ${header.month}`;
     const detailRows = header.type === 'daily'
         ? `<div><span class="k">Store:</span> <b>${esc(storeLabel(header.storeId))}</b></div>
            <div><span class="k">Date:</span> <b>${esc(header.date)}</b></div>`
@@ -2907,9 +2995,9 @@ function openCountSheet(){
     } else {
         baselineText = `Opening = <b>${esc(j.month)} Month Opening</b>`;
     }
-    const tagInfo = j.type === 'weekly' ? `Consumption matched to <b>Weekly · ${esc(j.week||'')}</b>`
-        : j.type === 'closing' ? `Consumption matched to <b>Closing · ${esc(j.month||'')}</b>`
-        : `Consumption matched to <b>Daily · ${esc(j.date)}</b>`;
+    const tagInfo = j.type === 'daily' ? `Consumption matched to <b>Daily · ${esc(j.date)}</b>`
+        : j.type === 'weekly' ? `Consumption matched to <b>Weekly · ${esc(j.week||'')}</b>`
+        : `Consumption matched to <b>Closing · ${esc(j.month||'')}</b>`;
     document.getElementById('modalTitle').innerHTML = `Inventory <span style="color:#2563eb">${esc(j.id)}</span> <span class="badge badge-orange" style="margin-left:8px">Draft</span>`;
     document.getElementById('modalBody').innerHTML = `
         <div class="journal-meta">
@@ -2921,7 +3009,7 @@ function openCountSheet(){
         <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:11px 14px;margin-bottom:16px;font-size:12.5px">
             <b>Baseline:</b> ${baselineText}<br>
             <b>Consumption:</b> ${tagInfo}<br>
-            Equation: Opening + Purchases + Transfers In − Transfers Out ± Adjustments − Consumption
+            Equation: Opening + Purchases + Transfers In − Transfers Out − Consumption
         </div>
         <div class="journal-toolbar">
             <div class="journal-progress">Entered <b id="cEntered">0</b> / ${j.lines.length}</div>
@@ -2931,7 +3019,6 @@ function openCountSheet(){
             <th style="width:70px">Code</th><th>Item</th><th style="width:45px">UOM</th>
             <th style="width:75px">Opening</th><th style="width:75px">+Purch</th>
             <th style="width:70px">+T.In</th><th style="width:70px">−T.Out</th>
-            <th style="width:70px">±Adj</th>
             <th style="width:80px">−Consum</th><th style="width:75px">Expected</th>
             <th style="width:90px">Physical</th><th style="width:75px">Variance</th><th style="width:65px">Status</th>
             <th style="width:70px;background:#f0fdf4">MTD P</th>
@@ -2951,14 +3038,12 @@ function countRowHTML(line, idx){
     const varClass = v === 0 ? 'var-ok' : Math.abs(v) > 1 ? 'var-bad' : 'var-warn';
     const status = line.physical === 0 ? '<span class="badge badge-gray">Not counted</span>'
                   : (Math.abs(v) > 1 ? '<span class="badge badge-red">Review</span>' : '<span class="badge badge-green">OK</span>');
-    const adjClass = (line.adjustments||0) < 0 ? 'red' : (line.adjustments||0) > 0 ? 'green' : '';
     return `<tr data-idx="${idx}" data-code="${esc(it?it.code:'')}" data-name="${esc(it?it.name.toLowerCase():'')}">
         <td>${esc(it?it.code:'?')}</td><td>${esc(it?it.name:'Unknown')}</td><td>${esc(line.uom)}</td>
         <td class="readonly-cell opening-src">${fmtNum(line.opening)}</td>
         <td class="readonly-cell">${line.purchases>0?'+':''}${fmtNum(line.purchases)}</td>
         <td class="readonly-cell">${line.transfersIn>0?'+':''}${fmtNum(line.transfersIn||0)}</td>
         <td class="readonly-cell">${line.transfersOut>0?'−':''}${fmtNum(line.transfersOut||0)}</td>
-        <td class="readonly-cell ${adjClass}">${(line.adjustments||0)>0?'+':''}${fmtNum(line.adjustments||0)}</td>
         <td class="readonly-cell">−${fmtNum(line.consumption)}</td>
         <td class="readonly-cell bold">${fmtNum(line.expected)}</td>
         <td><input type="number" step="0.01" value="${line.physical}" oninput="updateCountLine(${idx}, this.value)"></td>
@@ -2999,13 +3084,24 @@ function filterCountRows(){
     });
 }
 function cancelCount(){ if (!confirm('Discard?')) return; window._workingCount = null; closeModal(); }
-function submitCount(){
+async function submitCount(){
     const j = window._workingCount;
     if (!j) return;
     if (!j.lines.some(l => l.physical !== 0)) { toast('Enter at least one qty', 'error'); return; }
-    j.status = 'Submitted'; j.submittedAt = nowISO();
+        j.status = 'Submitted'; j.submittedAt = nowISO();
     delete j.baselineInfo;
-    DB.journals.push(j);
+
+    try {
+        if (CLOUD_MODE === 'supabase') {
+            await DataLayer.submitJournal(j);
+        } else {
+            DB.journals.push(j);
+        }
+    } catch(err) {
+        toast('Submit failed: ' + (err.message || err), 'error');
+        return;
+    }
+
     saveData();
     const isClosing = j.type === 'closing';
     const storeId = j.storeId, monthTag = j.month, jId = j.id;
@@ -3040,7 +3136,6 @@ function viewCount(id){
             <th style="text-align:right">Purch</th>
             <th style="text-align:right">T.In</th>
             <th style="text-align:right">T.Out</th>
-            <th style="text-align:right">Adj</th>
             <th style="text-align:right">Consum</th>
             <th style="text-align:right">Expected</th>
             <th style="text-align:right">Physical</th>
@@ -3054,7 +3149,6 @@ function viewCount(id){
                 <td style="text-align:right;color:#2563eb">+${fmtNum(l.purchases)}</td>
                 <td style="text-align:right;color:#16a34a">${(l.transfersIn||0)>0?'+':''}${fmtNum(l.transfersIn||0)}</td>
                 <td style="text-align:right;color:#dc2626">${(l.transfersOut||0)>0?'−':''}${fmtNum(l.transfersOut||0)}</td>
-                <td style="text-align:right" class="${(l.adjustments||0)<0?'red':(l.adjustments||0)>0?'green':''}">${(l.adjustments||0)>0?'+':''}${fmtNum(l.adjustments||0)}</td>
                 <td style="text-align:right;color:#ea580c">−${fmtNum(l.consumption)}</td>
                 <td style="text-align:right"><b>${fmtNum(l.expected)}</b></td>
                 <td style="text-align:right"><b>${fmtNum(l.physical)}</b></td>
@@ -3080,8 +3174,9 @@ RENDERERS.opening = function(){
             <option value="">All Stores</option>
             ${myStores.map(s => `<option value="${s.id}">${s.code} — ${esc(s.name)}</option>`).join('')}
         </select>
-        ${canCreate && myStores.length > 0 ? `<button class="btn-primary" onclick="openOpeningSetup()">+ New Opening</button>` : ''}
+        ${canCreate ? `<button class="btn-primary" onclick="openOpeningSetup()">+ New Opening</button>` : ''}
     </div>
+    ${myStores.length === 0 && canCreate ? `<div class="warn-box">⚠ No stores in your scope yet. Ask an admin to assign you to a store, or add stores in <b>Store Master</b>.</div>` : ''}
     <div class="panel">
         <div class="panel-header"><div class="panel-title">Openings</div>
         <span class="badge badge-blue">${openings.length}</span></div>
@@ -3115,7 +3210,18 @@ function filterOpenings(){
 function openOpeningSetup(){
     const u = currentUser();
     const myStores = getMyStoreObjects(u);
-    if (myStores.length === 0) { toast('No stores in scope.', 'error'); return; }
+    if (myStores.length === 0) {
+        openModal('Cannot Create Opening', `
+            <div class="dep-warning">
+                <div style="font-weight:bold;margin-bottom:8px">🚫 No stores in your scope</div>
+                <div style="font-size:13px;line-height:1.8">
+                    You are not assigned to any active store (or no stores exist yet).<br>
+                    Ask an <b>Administrator</b> to assign you to a store, or add stores in <b>Store Master</b>.
+                </div>
+            </div>
+        `, `<button class="btn-light" onclick="closeModal()">Close</button>`);
+        return;
+    }
     if (DB.items.length === 0) { toast('Add items first.', 'error'); return; }
     const months = getAvailableMonths();
     const defaultMonth = getCurrentMonthTag();
@@ -3338,8 +3444,8 @@ RENDERERS.reports = function(){
     <div class="cards">
         <div class="card"><div class="card-label">Journals</div><div class="card-value">${DB.journals.filter(j=>myStoreIds.has(j.storeId)).length}</div></div>
         <div class="card"><div class="card-label">Transfers</div><div class="card-value blue">${DB.transfers.length}</div></div>
-        <div class="card"><div class="card-label">Adjustments</div><div class="card-value orange">${DB.adjustments.length}</div></div>
         <div class="card"><div class="card-label">Sales Uploads</div><div class="card-value green">${DB.salesUploads.filter(s=>myStoreIds.has(s.storeId)).length}</div></div>
+        <div class="card"><div class="card-label">Items</div><div class="card-value">${DB.items.length}</div></div>
     </div>
     <div class="panel">
         <div class="panel-header"><div class="panel-title">Exports</div></div>
@@ -3351,8 +3457,8 @@ RENDERERS.reports = function(){
                 <tr><td>Sales Uploads Report</td><td><button class="btn-primary btn-sm" onclick="exportSalesCSV()">CSV</button></td></tr>
                 <tr><td>Exploded Consumption Report</td><td><button class="btn-primary btn-sm" onclick="exportExplodedCSV()">CSV</button></td></tr>
                 <tr><td>Inventory Journals Report</td><td><button class="btn-primary btn-sm" onclick="exportJournalsCSV()">CSV</button></td></tr>
+                <tr><td>Daily Variance Report</td><td><button class="btn-primary btn-sm" onclick="exportDailyVarianceCSV()">CSV</button></td></tr>
                 <tr><td>Transfer Register</td><td><button class="btn-primary btn-sm" onclick="exportTransfersCSV()">CSV</button></td></tr>
-                <tr><td>Adjustment Register</td><td><button class="btn-primary btn-sm" onclick="exportAdjustmentsCSV()">CSV</button></td></tr>
                 <tr><td>Full Backup (JSON)</td><td><button class="btn-primary btn-sm" onclick="exportFullBackup()">Download</button></td></tr>
             </tbody></table>
         </div>
@@ -3404,12 +3510,24 @@ function exportJournalsCSV(){
     const myStoreIds = new Set(getMyStores());
     const rows = DB.journals.filter(j => myStoreIds.has(j.storeId));
     if (rows.length === 0) { toast('Nothing','error'); return; }
-    const out = [['Journal','Type','Date','Month','Store','Week','Item Code','Item','UOM','Opening','Purchases','Transfers In','Transfers Out','Adjustments','Consumption','Expected','Physical','Variance','MTD Purchases','MTD Consumption','By','Status']];
+    const out = [['Journal','Type','Date','Month','Store','Week','Item Code','Item','UOM','Opening','Purchases','Transfers In','Transfers Out','Consumption','Expected','Physical','Variance','MTD Purchases','MTD Consumption','By','Status']];
     rows.forEach(j => j.lines.forEach(l => {
         const it = getItem(l.itemId);
-        out.push([j.id,j.type,j.date,j.month||'',storeLabel(j.storeId),j.week||'',it?it.code:'',it?it.name:'',l.uom,l.opening,l.purchases,l.transfersIn||0,l.transfersOut||0,l.adjustments||0,l.consumption,l.expected,l.physical,l.variance,l.mtdPurchases||0,l.mtdConsumption||0,j.byName,j.status]);
+        out.push([j.id,j.type,j.date,j.month||'',storeLabel(j.storeId),j.week||'',it?it.code:'',it?it.name:'',l.uom,l.opening,l.purchases,l.transfersIn||0,l.transfersOut||0,l.consumption,l.expected,l.physical,l.variance,l.mtdPurchases||0,l.mtdConsumption||0,j.byName,j.status]);
     }));
     downloadCSV(out, 'inventory_journals.csv');
+}
+function exportDailyVarianceCSV(){
+    const myStoreIds = new Set(getMyStores());
+    const rows = DB.journals.filter(j => myStoreIds.has(j.storeId) && j.type === 'daily');
+    if (rows.length === 0) { toast('Nothing','error'); return; }
+    const out = [['Journal','Date','Store','Item Code','Item','UOM','Opening','Purchases','Transfers In','Transfers Out','Consumption','Expected','Physical','Variance','Value Impact','By']];
+    rows.forEach(j => j.lines.forEach(l => {
+        const it = getItem(l.itemId);
+        const valueImpact = (l.variance||0) * (it ? it.cost : 0);
+        out.push([j.id, j.date, storeLabel(j.storeId), it?it.code:'', it?it.name:'', l.uom, l.opening, l.purchases, l.transfersIn||0, l.transfersOut||0, l.consumption, l.expected, l.physical, l.variance, valueImpact.toFixed(2), j.byName]);
+    }));
+    downloadCSV(out, 'daily_variance.csv');
 }
 function exportTransfersCSV(){
     if (DB.transfers.length === 0) { toast('Nothing','error'); return; }
@@ -3419,15 +3537,6 @@ function exportTransfersCSV(){
         out.push([t.id, t.date, storeLabel(t.fromStoreId), storeLabel(t.toStoreId), it?it.code:'', it?it.name:'', l.uom, l.qty, t.status, t.byName, t.approvedByName||'', t.approvedAt ? new Date(t.approvedAt).toLocaleString() : '']);
     }));
     downloadCSV(out, 'transfers.csv');
-}
-function exportAdjustmentsCSV(){
-    if (DB.adjustments.length === 0) { toast('Nothing','error'); return; }
-    const out = [['Adjustment No','Date','Store','Type','Reason','Item Code','Item','UOM','Qty','Status','Requested By','Approved By','Approved At']];
-    DB.adjustments.forEach(a => a.lines.forEach(l => {
-        const it = getItem(l.itemId);
-        out.push([a.id, a.date, storeLabel(a.storeId), a.type, a.reason, it?it.code:'', it?it.name:'', l.uom, l.qty, a.status, a.byName, a.approvedByName||'', a.approvedAt ? new Date(a.approvedAt).toLocaleString() : '']);
-    }));
-    downloadCSV(out, 'adjustments.csv');
 }
 function downloadCSV(rows, filename){
     const csv = rows.map(r => r.map(c => `"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -3491,8 +3600,8 @@ RENDERERS.backup = function(){
     <div class="cards">
         <div class="card"><div class="card-label">Storage</div><div class="card-value">${sizeKB} KB</div></div>
         <div class="card"><div class="card-label">Transfers</div><div class="card-value">${DB.transfers.length}</div></div>
-        <div class="card"><div class="card-label">Adjustments</div><div class="card-value">${DB.adjustments.length}</div></div>
         <div class="card"><div class="card-label">Journals</div><div class="card-value">${DB.journals.length}</div></div>
+        <div class="card"><div class="card-label">Sales Uploads</div><div class="card-value">${DB.salesUploads.length}</div></div>
     </div>
     <div class="panel">
         <div class="panel-header"><div class="panel-title">Backup</div></div>
@@ -3555,17 +3664,22 @@ function closeModal(){
     document.getElementById('modalBox').className = 'modal';
 }
 
-/* ---------- INIT ---------- */
-try {
-    DB = loadData();
-    console.log('[Dr Cafe ERP] DB ready, users:', DB.users.length, '| stores:', DB.stores.length);
-} catch(e) { alert('Startup error: ' + e.message); }
 
-document.addEventListener('DOMContentLoaded', () => {
+
+document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); });
     document.getElementById('loginUser').addEventListener('keydown', e => { if (e.key==='Enter') document.getElementById('loginPass').focus(); });
     document.getElementById('modalOverlay').addEventListener('click', e => { if (e.target.id==='modalOverlay') closeModal(); });
-    bootApp();
+
+    try {
+        if (CLOUD_MODE === 'local') {
+            DB = await loadData();
+        }
+        await bootApp();
+    } catch(e) {
+        console.error('Boot error:', e);
+        alert('Startup error: ' + (e.message || e));
+    }
 });
 </script>
 
