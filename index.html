@@ -1109,9 +1109,10 @@ async function softDelete(entityType, id, reason){
                 await SB.from('journal_lines').delete().eq('journal_id', id);
                 await SB.from('journals').delete().eq('id', id);
             } else if (entityType === 'salesUp') {
-                await SB.from('consumption_ledger_lines').delete().eq('ledger_id', 
-                    (await SB.from('consumption_ledger').select('id').eq('upload_ref', id).single()).data?.id
-                );
+                const { data: ledgerRow } = await SB.from('consumption_ledger').select('id').eq('upload_ref', id).single();
+                if (ledgerRow?.id) {
+                    await SB.from('consumption_ledger_lines').delete().eq('ledger_id', ledgerRow.id);
+                }
                 await SB.from('consumption_ledger').delete().eq('upload_ref', id);
                 await SB.from('sales_upload_lines').delete().eq('upload_id', id);
                 await SB.from('sales_uploads').delete().eq('id', id);
@@ -1138,7 +1139,14 @@ async function softDelete(entityType, id, reason){
             toast('Delete failed: ' + (err.message || err), 'error');
             return false;
         }
-    DB.voidedRecords.push({...});
+
+    DB.voidedRecords.push({
+        id: uid('void'), entityType, originalId: id,
+        label: record[reg.nameField] || id,
+        snapshot: JSON.parse(JSON.stringify(record)),
+        reason: reason || '', voidedAt: nowISO(),
+        voidedById: currentUser()?.id, voidedByName: currentUser()?.name || 'system'
+    });
     col.splice(idx, 1);
     if (entityType === 'salesUp') DB.consumptionLedger = DB.consumptionLedger.filter(x => x.uploadRef !== id);
     audit('VOID', entityType, id, { reason: reason || '' });
