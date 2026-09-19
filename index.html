@@ -641,6 +641,34 @@ const DataLayer = {
             if (e2) throw e2;
         }
     },
+        async insertOpening(opening) {
+        if (CLOUD_MODE === 'local') return;
+
+        const { error: e1 } = await SB.from('opening_stock').insert({
+            id: opening.id,
+            store_id: opening.storeId,
+            month: opening.month,
+            date: opening.date,
+            by_id: opening.byId,
+            by_name: opening.byName,
+            status: opening.status || 'Posted',
+            rolled_from: opening.rolledFrom || null
+        });
+        if (e1) throw e1;
+
+        if (opening.lines && opening.lines.length > 0) {
+            const { error: e2 } = await SB.from('opening_stock_lines').insert(
+                opening.lines.map(l => ({
+                    opening_id: opening.id,
+                    item_id: l.itemId,
+                    qty: l.qty,
+                    uom: l.uom
+                }))
+            );
+            if (e2) throw e2;
+        }
+    },
+
         async insertSalesUpload(upload, ledger) {
         if (CLOUD_MODE === 'local') return;
 
@@ -1447,7 +1475,7 @@ function buildCountLines(journal){
         openingSource
     };
 }
-function rollMonthForward(storeId, monthTag, closingJournal){
+async function rollMonthForward(storeId, monthTag, closingJournal){
     const nextMonth = nextMonthTag(monthTag);
     if (!nextMonth) return null;
     const existing = DB.openingStock.find(o => o.storeId===storeId && o.month===nextMonth && o.status==='Posted');
@@ -1457,6 +1485,14 @@ function rollMonthForward(storeId, monthTag, closingJournal){
     const date = todayISO();
     const id = nextMovementId('OPN', DB.openingStock, date);
     const newOpening = { id, storeId, month: nextMonth, date, byId: u.id, byName: u.name, status:'Posted', lines, createdAt: nowISO(), rolledFrom: closingJournal.id };
+
+    try {
+        await DataLayer.insertOpening(newOpening);
+    } catch(err) {
+        toast('Roll-forward save failed: ' + (err.message || err), 'error');
+        return null;
+    }
+
     DB.openingStock.push(newOpening);
     if (!isMonthClosed(storeId, monthTag)) {
         DB.closedMonths.push({ storeId, month: monthTag, closedAt: nowISO(), closedById: u.id, closedByName: u.name, closingId: closingJournal.id, rolledToOpeningId: newOpening.id });
@@ -3262,12 +3298,12 @@ async function submitCount(){
     const storeId = j.storeId, monthTag = j.month, jId = j.id;
     window._workingCount = null; closeModal();
     toast(`Journal ${jId} submitted`, 'success');
-    if (isClosing) {
-        setTimeout(() => {
+     if (isClosing) {
+        setTimeout(async () => {
             if (confirm(`Close ${monthTag} and roll forward to ${nextMonthTag(monthTag)}?`)) {
                 const closing = DB.journals.find(x => x.id === jId);
-                const r = rollMonthForward(storeId, monthTag, closing);
-                if (r) { saveData(); toast(`${monthTag} closed. ${r.month} opening created.`, 'success'); setTimeout(() => showPage('opening'), 500); }
+                const r = await rollMonthForward(storeId, monthTag, closing);
+                if (r) { toast(`${monthTag} closed. ${r.month} opening created.`, 'success'); setTimeout(() => showPage('opening'), 500); }
             } else showPage('closing');
         }, 400);
     } else showPage(j.type);
@@ -3446,13 +3482,25 @@ function updateOpeningProgress(){
     const total = o.lines.reduce((s,l) => s + (l.qty * (getItem(l.itemId)?.cost || 0)), 0);
     document.getElementById('opTotalValue').textContent = 'SAR ' + fmtNum(total);
 }
-function submitOpening(){
+async function submitOpening(){
     const o = window._workingOpening;
+    if (!o) return;
     if (!o.lines.some(l => l.qty !== 0)) { toast('Enter at least one qty', 'error'); return; }
-    o.status = 'Posted'; o.createdAt = nowISO();
+    o.status = 'Posted';
+    o.createdAt = nowISO();
+
+    try {
+        await DataLayer.insertOpening(o);
+    } catch(err) {
+        toast('Save failed: ' + (err.message || err), 'error');
+        return;
+    }
+
     DB.openingStock.push(o);
-    saveData(); window._workingOpening = null; closeModal();
-    toast(`Opening ${o.id} posted`, 'success'); showPage('opening');
+    window._workingOpening = null;
+    closeModal();
+    toast(`Opening ${o.id} posted`, 'success');
+    showPage('opening');
 }
 function viewOpening(id){
     const o = DB.openingStock.find(x => x.id===id);
