@@ -2849,7 +2849,8 @@ async function processSalesRows(rows, filename, tag){
     let totalUnits = 0;
     const byStore = {};
     parsed.forEach(p => { (byStore[p.storeId] = byStore[p.storeId] || []).push(p); });
-    Object.entries(byStore).forEach(([storeId, lines]) => {
+
+    for (const [storeId, lines] of Object.entries(byStore)) {
         const uploadId = nextMovementId('SAL', DB.salesUploads, tag.batchDate);
         const consumed = {};
         lines.forEach(sl => {
@@ -2863,7 +2864,8 @@ async function processSalesRows(rows, filename, tag){
                 consumed[l.itemId].breakdown.push({ productId: sl.productId, productName: bom.productName, soldQty: sl.qty, perUnit: Number(l.qty), exploded: totalQty });
             });
         });
-        DB.salesUploads.push({
+
+        const uploadRec = {
             id: uploadId, filename, date: tag.batchDate, batchDate: tag.batchDate,
             inventoryType: tag.inventoryType, week: tag.week || null, month: tag.monthTag,
             storeId,
@@ -2871,17 +2873,28 @@ async function processSalesRows(rows, filename, tag){
             unitsSold: lines.reduce((s,x) => s + x.qty, 0),
             lines: lines.map(sl => ({ productId: sl.productId, qty: sl.qty })),
             byId: u.id, byName: u.name, status:'Processed', createdAt: nowISO()
-        });
+        };
+
         const ledgerLines = Object.values(consumed).map(c => ({
             itemId: c.itemId, qty: Number(c.qty.toFixed(4)), uom: c.uom, breakdown: c.breakdown
         }));
-        DB.consumptionLedger.push({
+        const ledgerRec = {
             id: uploadId + '-LEDGER', storeId, date: tag.batchDate,
             uploadRef: uploadId, source: 'sales-bom',
             inventoryType: tag.inventoryType, week: tag.week || null, month: tag.monthTag,
             byId: u.id, byName: u.name, lines: ledgerLines, createdAt: nowISO()
-        });
-    });
+        };
+
+        try {
+            await DataLayer.insertSalesUpload(uploadRec, ledgerRec);
+        } catch(err) {
+            toast('Upload save failed: ' + (err.message || err), 'error');
+            return;
+        }
+
+        DB.salesUploads.push(uploadRec);
+        DB.consumptionLedger.push(ledgerRec);
+    }
     audit('UPLOAD','sales','',{ valid:parsed.length, rejects:rejects.length, totalUnits, tag:tag.inventoryType });
     saveData();
     const toastMsg = `Uploaded ${parsed.length} row(s), ${totalUnits} units — tagged ${tag.inventoryType}` + (rejects.length > 0 ? `, ${rejects.length} rejected` : '');
