@@ -641,6 +641,68 @@ const DataLayer = {
             if (e2) throw e2;
         }
     },
+        async insertSalesUpload(upload, ledger) {
+        if (CLOUD_MODE === 'local') return;
+
+        // 1. sales_uploads header
+        const { error: e1 } = await SB.from('sales_uploads').insert({
+            id: upload.id,
+            filename: upload.filename,
+            store_id: upload.storeId,
+            date: upload.date,
+            inventory_type: upload.inventoryType,
+            week: upload.week || null,
+            month: upload.month,
+            total_rows: upload.totalRows,
+            valid_rows: upload.validRows,
+            rejected_rows: upload.rejectedRows,
+            units_sold: upload.unitsSold,
+            by_id: upload.byId,
+            by_name: upload.byName,
+            status: upload.status || 'Processed'
+        });
+        if (e1) throw e1;
+
+        // 2. sales_upload_lines
+        if (upload.lines && upload.lines.length > 0) {
+            const { error: e2 } = await SB.from('sales_upload_lines').insert(
+                upload.lines.map(l => ({
+                    upload_id: upload.id,
+                    product_id: l.productId,
+                    qty: l.qty
+                }))
+            );
+            if (e2) throw e2;
+        }
+
+        // 3. consumption_ledger header
+        const { data: ledgerRow, error: e3 } = await SB.from('consumption_ledger').insert({
+            upload_ref: ledger.uploadRef,
+            store_id: ledger.storeId,
+            date: ledger.date,
+            inventory_type: ledger.inventoryType,
+            week: ledger.week || null,
+            month: ledger.month,
+            source: ledger.source || 'sales-bom',
+            by_id: ledger.byId,
+            by_name: ledger.byName
+        }).select().single();
+        if (e3) throw e3;
+
+        // 4. consumption_ledger_lines
+        if (ledger.lines && ledger.lines.length > 0) {
+            const { error: e4 } = await SB.from('consumption_ledger_lines').insert(
+                ledger.lines.map(l => ({
+                    ledger_id: ledgerRow.id,
+                    item_id: l.itemId,
+                    qty: l.qty,
+                    uom: l.uom,
+                    breakdown: l.breakdown || []
+                }))
+            );
+            if (e4) throw e4;
+        }
+    },
 
     async updateBOM(id, row) {
         if (CLOUD_MODE === 'local') return row;
