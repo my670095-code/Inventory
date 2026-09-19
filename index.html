@@ -503,15 +503,33 @@ const DataLayer = {
             return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') || defaultData();
         }
         const me = await this.me();
-        const [stores, items, bom, bomLines, employees, profiles] = await Promise.all([
+        const [stores, items, bom, bomLines, employees, profiles,
+               salesUploads, salesLines, ledger, ledgerLines,
+               openings, openingLines, purchases, purchaseLines,
+               transfers, transferLines,
+               journals, journalLines, closedMonths] = await Promise.all([
             SB.from('stores').select('*').eq('status','Active'),
             SB.from('items').select('*'),
             SB.from('bom').select('*'),
             SB.from('bom_lines').select('*'),
             SB.from('employees').select('*'),
-            SB.from('profiles').select('*')
+            SB.from('profiles').select('*'),
+            SB.from('sales_uploads').select('*').order('created_at', { ascending: false }).limit(500),
+            SB.from('sales_upload_lines').select('*'),
+            SB.from('consumption_ledger').select('*').order('created_at', { ascending: false }).limit(500),
+            SB.from('consumption_ledger_lines').select('*'),
+            SB.from('opening_stock').select('*').order('created_at', { ascending: false }).limit(500),
+            SB.from('opening_stock_lines').select('*'),
+            SB.from('purchases').select('*').order('created_at', { ascending: false }).limit(500),
+            SB.from('purchase_lines').select('*'),
+            SB.from('transfers').select('*').order('created_at', { ascending: false }).limit(500),
+            SB.from('transfer_lines').select('*'),
+            SB.from('journals').select('*').order('created_at', { ascending: false }).limit(500),
+            SB.from('journal_lines').select('*'),
+            SB.from('closed_months').select('*')
         ]);
         if (stores.error) throw stores.error;
+
         const bomWithLines = (bom.data || []).map(b => ({
             ...b,
             productId: b.product_id,
@@ -521,6 +539,7 @@ const DataLayer = {
                 qty: Number(l.qty), uom: l.uom
             }))
         }));
+
         return {
             meta: { version: 22, lastSaved: nowISO() },
             users: (profiles.data || []).map(p => ({
@@ -544,9 +563,82 @@ const DataLayer = {
             employees: (employees.data || []).map(e => ({
                 id: e.id, code: e.code, name: e.name, role: e.role, status: e.status
             })),
-            openingStock: [], purchases: [], salesUploads: [],
-            consumptionLedger: [], journals: [], transfers: [],
-            closedMonths: [], voidedRecords: [], auditLog: []
+
+            salesUploads: (salesUploads.data || []).map(s => ({
+                id: s.id, filename: s.filename, storeId: s.store_id, date: s.date,
+                batchDate: s.date, inventoryType: s.inventory_type, week: s.week, month: s.month,
+                totalRows: s.total_rows, validRows: s.valid_rows, rejectedRows: s.rejected_rows,
+                unitsSold: s.units_sold, byId: s.by_id, byName: s.by_name, status: s.status,
+                createdAt: s.created_at,
+                lines: (salesLines.data || []).filter(l => l.upload_id === s.id).map(l => ({
+                    productId: l.product_id, qty: Number(l.qty)
+                }))
+            })),
+
+            consumptionLedger: (ledger.data || []).map(c => ({
+                id: c.upload_ref + '-LEDGER',
+                uploadRef: c.upload_ref,
+                storeId: c.store_id, date: c.date,
+                inventoryType: c.inventory_type, week: c.week, month: c.month,
+                source: c.source, byId: c.by_id, byName: c.by_name,
+                createdAt: c.created_at,
+                lines: (ledgerLines.data || []).filter(l => l.ledger_id === c.id).map(l => ({
+                    itemId: l.item_id, qty: Number(l.qty), uom: l.uom,
+                    breakdown: l.breakdown || []
+                }))
+            })),
+
+            openingStock: (openings.data || []).map(o => ({
+                id: o.id, storeId: o.store_id, month: o.month, date: o.date,
+                byId: o.by_id, byName: o.by_name, status: o.status,
+                rolledFrom: o.rolled_from, createdAt: o.created_at,
+                lines: (openingLines.data || []).filter(l => l.opening_id === o.id).map(l => ({
+                    itemId: l.item_id, qty: Number(l.qty), uom: l.uom
+                }))
+            })),
+
+            purchases: (purchases.data || []).map(p => ({
+                id: p.id, storeId: p.store_id, date: p.date, supplier: p.supplier,
+                byId: p.by_id, byName: p.by_name, status: p.status, createdAt: p.created_at,
+                lines: (purchaseLines.data || []).filter(l => l.purchase_id === p.id).map(l => ({
+                    itemId: l.item_id, qty: Number(l.qty), uom: l.uom, cost: Number(l.cost)||0
+                }))
+            })),
+
+            transfers: (transfers.data || []).map(t => ({
+                id: t.id, date: t.date, fromStoreId: t.from_store_id, toStoreId: t.to_store_id,
+                reference: t.reference, notes: t.notes, status: t.status,
+                byId: t.by_id, byName: t.by_name, createdAt: t.created_at,
+                approvedAt: t.approved_at, approvedById: t.approved_by_id, approvedByName: t.approved_by_name,
+                rejectedAt: t.rejected_at, rejectedById: t.rejected_by_id, rejectedByName: t.rejected_by_name,
+                rejectReason: t.reject_reason,
+                lines: (transferLines.data || []).filter(l => l.transfer_id === t.id).map(l => ({
+                    itemId: l.item_id, qty: Number(l.qty), uom: l.uom
+                }))
+            })),
+
+            journals: (journals.data || []).map(j => ({
+                id: j.id, type: j.type, date: j.date, month: j.month, week: j.week,
+                storeId: j.store_id, byId: j.by_id, byName: j.by_name,
+                status: j.status, createdAt: j.created_at,
+                lines: (journalLines.data || []).filter(l => l.journal_id === j.id).map(l => ({
+                    itemId: l.item_id, uom: l.uom,
+                    opening: Number(l.opening), purchases: Number(l.purchases),
+                    transfersIn: Number(l.transfers_in), transfersOut: Number(l.transfers_out),
+                    consumption: Number(l.consumption), expected: Number(l.expected),
+                    physical: Number(l.physical), variance: Number(l.variance),
+                    mtdPurchases: Number(l.mtd_purchases), mtdConsumption: Number(l.mtd_consumption)
+                }))
+            })),
+
+            closedMonths: (closedMonths.data || []).map(c => ({
+                storeId: c.store_id, month: c.month,
+                closedAt: c.closed_at, closedById: c.closed_by_id, closedByName: c.closed_by_name,
+                closingId: c.closing_id, rolledToOpeningId: c.rolled_to_opening_id
+            })),
+
+            voidedRecords: [],
+            auditLog: []
         };
     },
 
