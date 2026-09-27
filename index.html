@@ -4185,7 +4185,14 @@ function viewCount(id){
     if (!j) return;
     const modalBox = document.getElementById('modalBox');
     modalBox.className = 'modal modal-xl';
-    document.getElementById('modalTitle').innerHTML = `Journal <span style="color:#2563eb">${esc(j.id)}</span> ${badge(j.status)}`;
+
+    const tagInfo = j.type === 'daily' ? `Daily · ${esc(j.date)}`
+        : j.type === 'weekly' ? `Weekly · ${esc(j.week||'')}`
+        : `Closing · ${esc(j.month||'')}`;
+
+    document.getElementById('modalTitle').innerHTML =
+        `Journal <span style="color:#2563eb">${esc(j.id)}</span> ${badge(j.status)} <span style="font-size:12px;color:#6b7280;margin-left:8px">${tagInfo}</span>`;
+
     document.getElementById('modalBody').innerHTML = `
         <div class="journal-meta">
             <div><div class="k">Type</div><div class="v">${esc(j.type.toUpperCase())}</div></div>
@@ -4193,8 +4200,23 @@ function viewCount(id){
             <div><div class="k">Store</div><div class="v">${esc(storeLabel(j.storeId))}</div></div>
             <div><div class="k">Month</div><div class="v">${esc(j.month||'—')}</div></div>
         </div>
-        <div class="journal-table-wrap"><table><thead><tr>
-            <th>Code</th><th>Item</th><th>UOM</th>
+
+        <div class="journal-toolbar">
+            <div class="journal-progress">Showing <b id="vCount">${j.lines.length}</b> / ${j.lines.length} items</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input type="text" class="journal-search" id="vSearch"
+                       placeholder="Search code or item..." oninput="filterViewRows()">
+                <button class="btn-light btn-sm" onclick="sortViewRows('code')">Sort: Code</button>
+                <button class="btn-light btn-sm" onclick="sortViewRows('name')">Sort: Name</button>
+                <button class="btn-light btn-sm" onclick="sortViewRows('variance')">Sort: Variance</button>
+                <button class="btn-primary btn-sm" onclick="exportViewExcel('${j.id}')">📥 Export Excel</button>
+            </div>
+        </div>
+
+        <div class="journal-table-wrap"><table id="viewCountTable"><thead><tr>
+            <th>Code</th>
+            <th>Item</th>
+            <th>UOM</th>
             <th style="text-align:right">Opening</th>
             <th style="text-align:right">Purch</th>
             <th style="text-align:right">T.In</th>
@@ -4203,24 +4225,133 @@ function viewCount(id){
             <th style="text-align:right">Expected</th>
             <th style="text-align:right">Physical</th>
             <th style="text-align:right">Variance</th>
-        </tr></thead><tbody>${j.lines.map(l => {
-            const it = getItem(l.itemId);
-            const v = l.variance || 0;
-            return `<tr>
-                <td>${esc(it?it.code:'?')}</td><td>${esc(it?it.name:'Unknown')}</td><td>${esc(l.uom)}</td>
-                <td style="text-align:right">${fmtNum(l.opening)}</td>
-                <td style="text-align:right;color:#2563eb">+${fmtNum(l.purchases)}</td>
-                <td style="text-align:right;color:#16a34a">${(l.transfersIn||0)>0?'+':''}${fmtNum(l.transfersIn||0)}</td>
-                <td style="text-align:right;color:#dc2626">${(l.transfersOut||0)>0?'−':''}${fmtNum(l.transfersOut||0)}</td>
-                <td style="text-align:right;color:#ea580c">−${fmtNum(l.consumption)}</td>
-                <td style="text-align:right"><b>${fmtNum(l.expected)}</b></td>
-                <td style="text-align:right"><b>${fmtNum(l.physical)}</b></td>
-                <td style="text-align:right" class="${v>0?'red':v<0?'green':''}">${v>0?'+':''}${fmtNum(v)}</td>
-            </tr>`;
-        }).join('')}</tbody></table></div>
+        </tr></thead>
+        <tbody id="viewCountBody"></tbody></table></div>
     `;
-    document.getElementById('modalFooter').innerHTML = `<button class="btn-light" onclick="closeModal()">Close</button>`;
+
+    window._viewJournal = j;
+    window._viewSort = { key: 'code', dir: 1 };
+    renderViewRows();
+
+    document.getElementById('modalFooter').innerHTML =
+        `<button class="btn-light" onclick="closeModal()">Close</button>`;
     document.getElementById('modalOverlay').classList.add('show');
+}
+
+function renderViewRows(){
+    const j = window._viewJournal;
+    if (!j) return;
+    const q = (document.getElementById('vSearch')?.value || '').toLowerCase().trim();
+
+    let rows = j.lines.map(l => {
+        const it = getItem(l.itemId);
+        return {
+            code: it ? it.code : '',
+            name: it ? it.name : 'Unknown',
+            uom: l.uom,
+            opening: l.opening, purchases: l.purchases,
+            transfersIn: l.transfersIn||0, transfersOut: l.transfersOut||0,
+            consumption: l.consumption, expected: l.expected,
+            physical: l.physical, variance: l.variance||0
+        };
+    });
+
+    if (q) rows = rows.filter(r =>
+        r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
+
+    const s = window._viewSort;
+    rows.sort((a,b) => {
+        if (s.key === 'variance') return (a.variance - b.variance) * s.dir;
+        return String(a[s.key]).localeCompare(String(b[s.key])) * s.dir;
+    });
+
+    const tbody = document.getElementById('viewCountBody');
+    tbody.innerHTML = rows.map(r => {
+        const v = r.variance;
+        const vClass = v>0?'red':v<0?'green':'';
+        return `<tr>
+            <td><b>${esc(r.code)}</b></td>
+            <td>${esc(r.name)}</td>
+            <td>${esc(r.uom)}</td>
+            <td style="text-align:right">${fmtNum(r.opening)}</td>
+            <td style="text-align:right;color:#2563eb">+${fmtNum(r.purchases)}</td>
+            <td style="text-align:right;color:#16a34a">${r.transfersIn>0?'+':''}${fmtNum(r.transfersIn)}</td>
+            <td style="text-align:right;color:#dc2626">${r.transfersOut>0?'−':''}${fmtNum(r.transfersOut)}</td>
+            <td style="text-align:right;color:#ea580c">−${fmtNum(r.consumption)}</td>
+            <td style="text-align:right"><b>${fmtNum(r.expected)}</b></td>
+            <td style="text-align:right"><b>${fmtNum(r.physical)}</b></td>
+            <td style="text-align:right" class="${vClass}">${v>0?'+':''}${fmtNum(v)}</td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="11" style="text-align:center;padding:24px;color:#9ca3af">No items match your search</td></tr>';
+
+    const cnt = document.getElementById('vCount');
+    if (cnt) cnt.textContent = rows.length;
+}
+
+function filterViewRows(){
+    renderViewRows();
+}
+
+function sortViewRows(key){
+    if (!window._viewSort) window._viewSort = { key:'code', dir:1 };
+    if (window._viewSort.key === key) window._viewSort.dir *= -1;
+    else { window._viewSort.key = key; window._viewSort.dir = 1; }
+    renderViewRows();
+}
+
+function exportViewExcel(id){
+    const j = DB.journals.find(x => x.id === id);
+    if (!j) return;
+    if (typeof XLSX === 'undefined') { toast('Excel library not ready, try again', 'error'); return; }
+
+    const q = (document.getElementById('vSearch')?.value || '').toLowerCase().trim();
+    let rows = j.lines.map(l => {
+        const it = getItem(l.itemId);
+        return {
+            code: it?it.code:'', name: it?it.name:'Unknown', uom: l.uom,
+            opening: l.opening, purchases: l.purchases,
+            transfersIn: l.transfersIn||0, transfersOut: l.transfersOut||0,
+            consumption: l.consumption, expected: l.expected,
+            physical: l.physical, variance: l.variance||0
+        };
+    });
+    if (q) rows = rows.filter(r =>
+        r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
+
+    const s = window._viewSort || { key:'code', dir:1 };
+    rows.sort((a,b) => {
+        if (s.key === 'variance') return (a.variance - b.variance) * s.dir;
+        return String(a[s.key]).localeCompare(String(b[s.key])) * s.dir;
+    });
+
+    const store = getStore(j.storeId);
+    const aoa = [
+        ['Journal No', j.id],
+        ['Type', j.type],
+        ['Date', j.date],
+        ['Store', store ? store.code + ' — ' + store.name : j.storeId],
+        ['Month', j.month || ''],
+        ['Status', j.status],
+        ['Submitted By', j.byName || ''],
+        [],
+        ['Code','Item','UOM','Opening','Purchases','Transfers In','Transfers Out',
+         'Consumption','Expected','Physical','Variance']
+    ];
+    rows.forEach(r => aoa.push([
+        r.code, r.name, r.uom, r.opening, r.purchases,
+        r.transfersIn, r.transfersOut, r.consumption,
+        r.expected, r.physical, r.variance
+    ]));
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [
+        {wch:14},{wch:32},{wch:8},{wch:10},{wch:10},{wch:11},{wch:12},
+        {wch:12},{wch:10},{wch:10},{wch:10}
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Journal');
+    XLSX.writeFile(wb, `${j.id}_${j.type}_${j.date}.xlsx`);
+    toast('Exported ' + j.id, 'success');
 }
 
 /* ---------- OPENING ---------- */
