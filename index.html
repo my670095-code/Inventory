@@ -3345,11 +3345,11 @@ async function processSalesRows(rows, filename, tag){
     const myStoreIds = new Set(getMyStores(u));
     if (rows.length === 0) { toast('File is empty', 'error'); return; }
     const H = {
-        storeCode: ['store code','store','storecode','store_code','branch','branch code'],
-        productId: ['product id','product code','productid','productcode','sku','item code','item'],
-        qty:       ['qty','qty sold','quantity','sold','sales','units','units sold','sale qty'],
-        date:      ['date','sale date','sales date','transaction date','txn date','day']
-    };
+    storeCode: ['store code','store','storecode','store_code','branch','branch code','invd_str_id'],
+    productId: ['product id','product code','productid','productcode','sku','item code','item','invd_item'],
+    qty:       ['qty','qty sold','quantity','sold','sales','units','units sold','sale qty'],
+    date:      ['date','sale date','sales date','transaction date','txn date','day','invd_dob']
+};
     function pick(obj, keys){
         for (const k of Object.keys(obj)) if (keys.includes(k.toLowerCase().trim())) return obj[k];
         return '';
