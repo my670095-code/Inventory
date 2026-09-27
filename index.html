@@ -2908,12 +2908,12 @@ async function saveBOM(editId){
             return;
         }
 
-        DB.bom.push(rec);
-        audit('CREATE','bom',id,{ productId, productName });
+          DB.bom.push(rec);
+        audit('CREATE','bom',id, { productId, productName });
         closeModal(); toast('BOM created', 'success');
     }
     showPage('bom');
-    }
+}
     /* ---------- BOM IMPORT FROM EXCEL ---------- */
 let _bomImportParsed = null;
 
