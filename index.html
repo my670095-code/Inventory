@@ -4209,6 +4209,7 @@ function viewCount(id){
                 <button class="btn-light btn-sm" onclick="sortViewRows('code')">Sort: Code</button>
                 <button class="btn-light btn-sm" onclick="sortViewRows('name')">Sort: Name</button>
                 <button class="btn-light btn-sm" onclick="sortViewRows('variance')">Sort: Variance</button>
+                ${j.status === 'Submitted' ? `<button class="btn-warn btn-sm" onclick="regenerateJournal('${j.id}')">🔄 Recalculate</button>` : ''}
                 <button class="btn-primary btn-sm" onclick="exportViewExcel('${j.id}')">📥 Export Excel</button>
             </div>
         </div>
@@ -4352,6 +4353,88 @@ function exportViewExcel(id){
     XLSX.utils.book_append_sheet(wb, ws, 'Journal');
     XLSX.writeFile(wb, `${j.id}_${j.type}_${j.date}.xlsx`);
     toast('Exported ' + j.id, 'success');
+}
+    async function regenerateJournal(id){
+    const j = DB.journals.find(x => x.id === id);
+    if (!j) { toast('Journal not found', 'error'); return; }
+    if (j.status !== 'Submitted') { toast('Only submitted journals can be recalculated', 'error'); return; }
+
+    if (!confirm(`Recalculate "${j.id}"?\n\nThis will re-read purchases, transfers, and consumption for ${j.date} and update Expected / Variance.\n\nPhysical counts you entered are NOT changed.`)) return;
+
+    // 1. Rebuild the system-side lines from current data
+    const rebuilt = buildCountLines({
+        storeId: j.storeId,
+        type: j.type,
+        date: j.date,
+        month: j.month,
+        week: j.week,
+        createdAt: j.createdAt
+    });
+
+    // 2. Merge: keep old physical, take new system fields
+    const oldPhysical = {};
+    j.lines.forEach(l => { oldPhysical[l.itemId] = Number(l.physical) || 0; });
+
+    const newLines = rebuilt.lines.map(l => {
+        const phys = oldPhysical[l.itemId] !== undefined ? oldPhysical[l.itemId] : 0;
+        return {
+            itemId: l.itemId,
+            uom: l.uom,
+            opening: l.opening,
+            purchases: l.purchases,
+            transfersIn: l.transfersIn,
+            transfersOut: l.transfersOut,
+            consumption: l.consumption,
+            expected: l.expected,
+            physical: phys,
+            variance: phys - l.expected,
+            mtdPurchases: l.mtdPurchases,
+            mtdConsumption: l.mtdConsumption
+        };
+    });
+
+    const updated = { ...j, lines: newLines, regeneratedAt: nowISO() };
+
+    // 3. Persist
+    try {
+        if (CLOUD_MODE === 'supabase') {
+            // delete old lines and re-insert with same header id
+            const { error: delErr } = await SB.from('journal_lines').delete().eq('journal_id', j.id);
+            if (delErr) throw delErr;
+            if (newLines.length > 0) {
+                const { error: insErr } = await SB.from('journal_lines').insert(
+                    newLines.map(l => ({
+                        journal_id: j.id,
+                        item_id: l.itemId,
+                        uom: l.uom,
+                        opening: l.opening,
+                        purchases: l.purchases,
+                        transfers_in: l.transfersIn,
+                        transfers_out: l.transfersOut,
+                        consumption: l.consumption,
+                        expected: l.expected,
+                        physical: l.physical,
+                        variance: l.variance,
+                        mtd_purchases: l.mtdPurchases,
+                        mtd_consumption: l.mtdConsumption
+                    }))
+                );
+                if (insErr) throw insErr;
+            }
+        }
+
+        // 4. Update in-memory
+        j.lines = newLines;
+        j.regeneratedAt = nowISO();
+        audit('REGENERATE','journal',j.id,{});
+        saveData();
+
+        toast('Journal recalculated', 'success');
+        closeModal();
+        viewCount(id);   // reopen with fresh data
+    } catch(err) {
+        toast('Recalculate failed: ' + (err.message || err), 'error');
+    }
 }
 
 /* ---------- OPENING ---------- */
