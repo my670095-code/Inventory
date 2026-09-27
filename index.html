@@ -4405,6 +4405,7 @@ function exportViewExcel(id){
                 const { error: insErr } = await SB.from('journal_lines').insert(
                     newLines.map(l => ({
                         journal_id: j.id,
+                        journal_date: j.date,
                         item_id: l.itemId,
                         uom: l.uom,
                         opening: l.opening,
