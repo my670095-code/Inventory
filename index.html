@@ -4083,17 +4083,9 @@ function openCountSheet(){
     if (!j) return;
     const modalBox = document.getElementById('modalBox');
     modalBox.className = 'modal modal-xl';
-    let baselineText;
-    if (j.type === 'daily' && j.baselineInfo?.source === 'previous-journal') {
-        const bj = j.baselineInfo.journal;
-        baselineText = `Opening rolls from <b>${esc(bj.id)}</b> (${esc(bj.type)})`;
-    } else {
-        baselineText = `Opening = <b>${esc(j.month)} Month Opening</b>`;
-    }
-    const tagInfo = j.type === 'daily' ? `Consumption matched to <b>Daily · ${esc(j.date)}</b>`
-        : j.type === 'weekly' ? `Consumption matched to <b>Weekly · ${esc(j.week||'')}</b>`
-        : `Consumption matched to <b>Closing · ${esc(j.month||'')}</b>`;
-    document.getElementById('modalTitle').innerHTML = `Inventory <span style="color:#2563eb">${esc(j.id)}</span> <span class="badge badge-orange" style="margin-left:8px">Draft</span>`;
+    const titleMap = { daily:'Daily', weekly:'Weekly', closing:'Closing' };
+    document.getElementById('modalTitle').innerHTML =
+        `${titleMap[j.type]||''} Count Sheet <span style="color:#2563eb">${esc(j.id)}</span> <span class="badge badge-orange" style="margin-left:8px">Entering</span>`;
     document.getElementById('modalBody').innerHTML = `
         <div class="journal-meta">
             <div><div class="k">Type</div><div class="v">${esc(j.type.toUpperCase())}</div></div>
@@ -4101,27 +4093,21 @@ function openCountSheet(){
             <div><div class="k">Store</div><div class="v">${esc(storeLabel(j.storeId))}</div></div>
             <div><div class="k">Month</div><div class="v">${esc(j.month)}</div></div>
         </div>
-        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:11px 14px;margin-bottom:16px;font-size:12.5px">
-            <b>Baseline:</b> ${baselineText}<br>
-            <b>Consumption:</b> ${tagInfo}<br>
-            Equation: Opening + Purchases + Transfers In − Transfers Out − Consumption
-        </div>
         <div class="journal-toolbar">
             <div class="journal-progress">Entered <b id="cEntered">0</b> / ${j.lines.length}</div>
-            <input type="text" class="journal-search" id="cSearch" placeholder="Search..." oninput="filterCountRows()">
+            <input type="text" class="journal-search" id="cSearch" placeholder="Search by code or name..." oninput="filterCountRows()">
         </div>
         <div class="journal-table-wrap"><table><thead><tr>
-            <th style="width:70px">Code</th><th>Item</th><th style="width:45px">UOM</th>
-            <th style="width:75px">Opening</th><th style="width:75px">+Purch</th>
-            <th style="width:70px">+T.In</th><th style="width:70px">−T.Out</th>
-            <th style="width:80px">−Consum</th><th style="width:75px">Expected</th>
-            <th style="width:90px">Physical</th><th style="width:75px">Variance</th><th style="width:65px">Status</th>
-            <th style="width:70px;background:#f0fdf4">MTD P</th>
-            <th style="width:70px;background:#f0fdf4">MTD C</th>
+            <th style="width:100px">Code</th>
+            <th>Item</th>
+            <th style="width:80px">UOM</th>
+            <th style="width:160px">Physical Count</th>
         </tr></thead><tbody id="countBody">${j.lines.map((l, idx) => countRowHTML(l, idx)).join('')}</tbody></table></div>
     `;
     document.getElementById('modalFooter').innerHTML = `
-        <div style="flex:1;font-size:12px;color:#6b7280;align-self:center">Total Value Impact: <b id="cTotalValue" style="color:#2563eb">SAR 0.00</b></div>
+        <div style="flex:1;font-size:12px;color:#6b7280;align-self:center">
+            <b id="cEnteredFoot">0</b> of ${j.lines.length} items counted
+        </div>
         <button class="btn-light" onclick="cancelCount()">Cancel</button>
         <button class="btn-success" onclick="submitCount()">Submit</button>`;
     document.getElementById('modalOverlay').classList.add('show');
@@ -4129,23 +4115,11 @@ function openCountSheet(){
 }
 function countRowHTML(line, idx){
     const it = getItem(line.itemId);
-    const v = line.physical - line.expected;
-    const varClass = v === 0 ? 'var-ok' : Math.abs(v) > 1 ? 'var-bad' : 'var-warn';
-    const status = line.physical === 0 ? '<span class="badge badge-gray">Not counted</span>'
-                  : (Math.abs(v) > 1 ? '<span class="badge badge-red">Review</span>' : '<span class="badge badge-green">OK</span>');
     return `<tr data-idx="${idx}" data-code="${esc(it?it.code:'')}" data-name="${esc(it?it.name.toLowerCase():'')}">
-        <td>${esc(it?it.code:'?')}</td><td>${esc(it?it.name:'Unknown')}</td><td>${esc(line.uom)}</td>
-        <td class="readonly-cell opening-src">${fmtNum(line.opening)}</td>
-        <td class="readonly-cell">${line.purchases>0?'+':''}${fmtNum(line.purchases)}</td>
-        <td class="readonly-cell">${line.transfersIn>0?'+':''}${fmtNum(line.transfersIn||0)}</td>
-        <td class="readonly-cell">${line.transfersOut>0?'−':''}${fmtNum(line.transfersOut||0)}</td>
-        <td class="readonly-cell">−${fmtNum(line.consumption)}</td>
-        <td class="readonly-cell bold">${fmtNum(line.expected)}</td>
-        <td><input type="number" step="0.01" value="${line.physical}" oninput="updateCountLine(${idx}, this.value)"></td>
-        <td class="var-cell ${varClass}" id="cVar${idx}">${v>0?'+':''}${fmtNum(v)}</td>
-        <td id="cSts${idx}">${status}</td>
-        <td class="readonly-cell mtd">${fmtNum(line.mtdPurchases||0)}</td>
-        <td class="readonly-cell mtd">${fmtNum(line.mtdConsumption||0)}</td>
+        <td><b>${esc(it?it.code:'?')}</b></td>
+        <td>${esc(it?it.name:'Unknown')}</td>
+        <td>${esc(line.uom)}</td>
+        <td><input type="number" step="0.01" value="${line.physical}" oninput="updateCountLine(${idx}, this.value)" style="width:100%"></td>
     </tr>`;
 }
 function updateCountLine(idx, value){
@@ -4154,22 +4128,16 @@ function updateCountLine(idx, value){
     const line = j.lines[idx];
     line.physical = Number(value) || 0;
     line.variance = line.physical - line.expected;
-    const v = line.variance;
-    const varClass = v === 0 ? 'var-ok' : Math.abs(v) > 1 ? 'var-bad' : 'var-warn';
-    const status = line.physical === 0 ? '<span class="badge badge-gray">Not counted</span>'
-                  : (Math.abs(v) > 1 ? '<span class="badge badge-red">Review</span>' : '<span class="badge badge-green">OK</span>');
-    document.getElementById('cVar'+idx).textContent = (v>0?'+':'') + fmtNum(v);
-    document.getElementById('cVar'+idx).className = 'var-cell ' + varClass;
-    document.getElementById('cSts'+idx).innerHTML = status;
     updateCountProgress();
 }
 function updateCountProgress(){
     const j = window._workingCount;
     if (!j) return;
-    document.getElementById('cEntered').textContent = j.lines.filter(l => l.physical !== 0).length;
-    const val = j.lines.reduce((s,l) => { const it = getItem(l.itemId); return s + ((l.variance||0) * (it?it.cost:0)); }, 0);
-    const tv = document.getElementById('cTotalValue');
-    if (tv) { tv.textContent = 'SAR ' + fmtNum(val); tv.style.color = val > 0 ? '#dc2626' : val < 0 ? '#16a34a' : '#2563eb'; }
+    const entered = j.lines.filter(l => l.physical !== 0).length;
+    const a = document.getElementById('cEntered');
+    const b = document.getElementById('cEnteredFoot');
+    if (a) a.textContent = entered;
+    if (b) b.textContent = entered;
 }
 function filterCountRows(){
     const q = (document.getElementById('cSearch').value || '').toLowerCase();
