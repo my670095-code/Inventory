@@ -2913,6 +2913,7 @@ async function saveBOM(editId){
         closeModal(); toast('BOM created', 'success');
     }
     showPage('bom');
+    }
     /* ---------- BOM IMPORT FROM EXCEL ---------- */
 let _bomImportParsed = null;
 
@@ -3254,7 +3255,6 @@ async function confirmBOMImport(){
         btn.textContent = 'Import';
         toast('Import failed: ' + (err.message || err), 'error');
     }
-}
 }
 
 /* ---------- TRANSFERS ---------- */
