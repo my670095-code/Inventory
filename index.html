@@ -317,7 +317,7 @@ input:focus, select:focus { outline:none; border-color:#1a7a4c; box-shadow:0 0 0
 .info-block { background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:14px 18px; font-size:13px; color:#1e40af; margin-bottom:16px; }
 .info-block b { color:#1e3a8a; }
 
-.upload-options { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:16px; padding:16px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; }
+.upload-options { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:16px; padding:16px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; } .upload-options .form-row { margin-bottom:0; } #importPreview table { width:100%; border-collapse:collapse; } #importPreview th { background:#f9fafb; font-size:11px; padding:8px; text-align:left; border-bottom:1px solid #e5e7eb; } #importPreview td { padding:6px 8px; border-bottom:1px solid #f0f0f0; }
 .upload-options .form-row { margin-bottom:0; }
 
 .gate-icon { font-size:42px; text-align:center; display:block; margin-bottom:12px; }
@@ -2331,6 +2331,7 @@ RENDERERS.items = function(){
             ${[...new Set(DB.items.map(i=>i.cat))].map(c=>`<option>${esc(c)}</option>`).join('')}
         </select>
         ${canCreate?`<button class="btn-primary" onclick="openItemModal()">+ New Item</button>`:''}
+        ${canCreate?`<button class="btn-light" onclick="openItemImportModal()">📥 Import from Excel</button>`:''}
     </div>
     <div class="panel">
         <div class="panel-header">
@@ -2455,6 +2456,267 @@ async function saveItem(editId){
         closeModal(); toast('Item added', 'success');
     }
     showPage('items');
+}
+    /* ---------- ITEM IMPORT FROM EXCEL ---------- */
+let _importParsed = null;
+
+function openItemImportModal(){
+    if (!can('createItem')) { toast('Admin only.', 'error'); return; }
+    _importParsed = null;
+    openModal('Import Items from Excel', `
+        <div class="info-block">
+            <b>Excel format:</b> First row must be headers. Required columns:
+            <code>Code</code>, <code>Name</code>. Optional: <code>Category</code>, <code>UOM</code>, <code>Cost</code>, <code>D</code>, <code>W</code>, <code>M</code>.
+            <br><br>
+            <b>Codes must be unique.</b> Existing codes will be updated/skipped based on your mode selection.
+        </div>
+        <div class="form-row">
+            <label>Import Mode</label>
+            <select id="impMode">
+                <option value="add">Add only — insert new, skip existing</option>
+                <option value="update" selected>Update existing — update matching, add new</option>
+                <option value="replace">Replace all — ⚠ delete ALL items first, then import</option>
+            </select>
+        </div>
+        <div class="upload-drop" onclick="document.getElementById('impFile').click()">
+            <div class="upload-icon">📊</div>
+            <div class="upload-text">Click to upload Excel</div>
+            <div class="upload-hint">.xlsx, .xls, .csv</div>
+        </div>
+        <input type="file" id="impFile" class="upload-file" accept=".xlsx,.xls,.csv" onchange="handleItemImportFile(event)">
+        <div id="impPreview" style="margin-top:16px"></div>
+    `, `
+        <button class="btn-light" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" id="impConfirmBtn" onclick="confirmItemImport()" disabled>Import</button>
+    `);
+}
+
+async function handleItemImportFile(evt){
+    const file = evt.target.files[0];
+    if (!file) return;
+    if (!XLSX_READY) { toast('Excel library still loading. Try again in 2 seconds.', 'error'); evt.target.value=''; return; }
+
+    const reader = new FileReader();
+    reader.onload = function(e){
+        try {
+            const data = new Uint8Array(e.target.result);
+            const wb = XLSX.read(data, { type:'array', cellDates: true });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { defval:'', raw: true });
+            parseItemImport(rows, file.name);
+        } catch(err) {
+            toast('Parse failed: ' + err.message, 'error');
+        }
+    };
+    reader.readAsArrayBuffer(file);
+    evt.target.value = '';
+}
+
+function parseItemImport(rows, filename){
+    if (rows.length === 0) { toast('File is empty', 'error'); return; }
+
+    // Map header names case-insensitively
+    const H = {
+        code:     ['code','item code','itemcode','item_code','sku'],
+        name:     ['name','item name','itemname','item_name','description'],
+        cat:      ['category','cat','category name','group'],
+        uom:      ['uom','unit','unit of measure','unit of measurement'],
+        cost:     ['cost','unit cost','price','cost price'],
+        daily:    ['d','daily','is_daily','daily flag'],
+        weekly:   ['w','weekly','is_weekly','weekly flag'],
+        monthly:  ['m','monthly','is_monthly','monthly flag']
+    };
+    function pick(obj, keys){
+        for (const k of Object.keys(obj)) {
+            if (keys.includes(k.toLowerCase().trim().replace(/\s+/g,' '))) return obj[k];
+        }
+        return undefined;
+    }
+    function toBool(v, def){
+        if (v === undefined || v === null || v === '') return def;
+        const s = String(v).toLowerCase().trim();
+        if (['y','yes','1','true','t'].includes(s)) return true;
+        if (['n','no','0','false','f'].includes(s)) return false;
+        return def;
+    }
+
+    const valid = [];
+    const warnings = [];
+    const errors = [];
+    const seenCodes = new Set();
+
+    rows.forEach((row, i) => {
+        const lineNo = i + 2;
+        const codeRaw = String(pick(row, H.code) || '').trim();
+        const nameRaw = String(pick(row, H.name) || '').trim();
+
+        if (!codeRaw && !nameRaw) return; // blank row
+
+        if (!codeRaw) { errors.push({ line: lineNo, msg: 'Missing Code', row }); return; }
+        if (!nameRaw) { errors.push({ line: lineNo, msg: 'Missing Name', row }); return; }
+
+        // Strip non-alphanumeric except dash/underscore/dot
+        const code = codeRaw.replace(/[^a-zA-Z0-9._-]/g, '');
+        if (code !== codeRaw) {
+            warnings.push({ line: lineNo, msg: `Code "${codeRaw}" cleaned to "${code}"`, row });
+        }
+        if (seenCodes.has(code)) {
+            errors.push({ line: lineNo, msg: `Duplicate Code "${code}" within file`, row });
+            return;
+        }
+        seenCodes.add(code);
+
+        const cat = String(pick(row, H.cat) || '').trim() || 'Uncategorized';
+        const uom = String(pick(row, H.uom) || '').trim() || 'Pcs';
+        const costRaw = pick(row, H.cost);
+        const cost = Number(costRaw) || 0;
+
+        const dVal = toBool(pick(row, H.daily), null);
+        const wVal = toBool(pick(row, H.weekly), null);
+        const mVal = toBool(pick(row, H.monthly), null);
+
+        // If all three blank → default all true
+        const anySet = dVal !== null || wVal !== null || mVal !== null;
+        const daily   = dVal !== null ? dVal : (anySet ? false : true);
+        const weekly  = wVal !== null ? wVal : (anySet ? false : true);
+        const monthly = mVal !== null ? mVal : (anySet ? false : true);
+
+        const id = 'i-' + code.toLowerCase().replace(/[^a-z0-9]/g, '');
+        valid.push({ id, code, name: nameRaw, cat, uom, cost, daily, weekly, monthly });
+    });
+
+    _importParsed = { valid, warnings, errors, filename };
+
+    // Render preview
+    const mode = document.getElementById('impMode').value;
+    const preview = document.getElementById('impPreview');
+    const sample = valid.slice(0, 8);
+    preview.innerHTML = `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:10px">
+            <b>File:</b> ${esc(filename)} &nbsp;·&nbsp;
+            <span class="green"><b>${valid.length}</b> valid</span>
+            ${warnings.length > 0 ? ` · <span class="orange"><b>${warnings.length}</b> warnings</span>` : ''}
+            ${errors.length > 0 ? ` · <span class="red"><b>${errors.length}</b> errors</span>` : ''}
+        </div>
+        ${sample.length > 0 ? `
+        <div style="max-height:220px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+            <table style="font-size:12px">
+                <thead><tr><th>Code</th><th>Name</th><th>Cat</th><th>UOM</th><th>Cost</th><th>D</th><th>W</th><th>M</th></tr></thead>
+                <tbody>${sample.map(r => `
+                    <tr>
+                        <td>${esc(r.code)}</td>
+                        <td>${esc(r.name)}</td>
+                        <td>${esc(r.cat)}</td>
+                        <td>${esc(r.uom)}</td>
+                        <td>${fmtNum(r.cost)}</td>
+                        <td>${r.daily?'✓':'-'}</td>
+                        <td>${r.weekly?'✓':'-'}</td>
+                        <td>${r.monthly?'✓':'-'}</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>
+        ${valid.length > 8 ? `<p style="font-size:12px;color:#6b7280;margin-top:6px">…and ${valid.length - 8} more</p>` : ''}
+        ` : ''}
+        ${errors.length > 0 ? `
+            <div style="margin-top:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;max-height:150px;overflow-y:auto">
+                <b style="color:#b91c1c">Errors:</b>
+                ${errors.slice(0, 20).map(e => `<div>Line ${e.line}: ${esc(e.msg)}</div>`).join('')}
+                ${errors.length > 20 ? `<div>…and ${errors.length - 20} more</div>` : ''}
+            </div>` : ''}
+    `;
+
+    const btn = document.getElementById('impConfirmBtn');
+    if (btn) btn.disabled = valid.length === 0;
+}
+
+async function confirmItemImport(){
+    if (!_importParsed) { toast('No file loaded', 'error'); return; }
+    const { valid } = _importParsed;
+    if (valid.length === 0) { toast('No valid rows', 'error'); return; }
+
+    const mode = document.getElementById('impMode').value;
+
+    if (mode === 'replace') {
+        if (!confirm(`⚠ REPLACE ALL mode:\n\nThis will DELETE all ${DB.items.length} existing items from Supabase, then import ${valid.length} items from the file.\n\nContinue?`)) return;
+        if (!confirm('This cannot be undone. Really proceed?')) return;
+    }
+
+    const btn = document.getElementById('impConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Importing…';
+
+    try {
+        if (mode === 'replace') {
+            toast(`Deleting ${DB.items.length} existing items…`, 'success');
+            const { error } = await SB.from('items').delete().neq('id', '___never___');
+            if (error) throw error;
+            DB.items = [];
+        }
+
+        // Chunk into batches of 500 for reliability
+        const CHUNK = 500;
+        let inserted = 0, updated = 0, skipped = 0, failed = 0;
+        const existingCodes = new Set(DB.items.map(i => i.code));
+
+        for (let i = 0; i < valid.length; i += CHUNK) {
+            const chunk = valid.slice(i, i + CHUNK);
+            btn.textContent = `Importing ${Math.min(i + CHUNK, valid.length)} / ${valid.length}…`;
+
+            if (mode === 'add') {
+                const toInsert = chunk.filter(r => !existingCodes.has(r.code));
+                skipped += chunk.length - toInsert.length;
+                if (toInsert.length === 0) continue;
+                const rows = toInsert.map(r => ({
+                    id: r.id, code: r.code, name: r.name, cat: r.cat, uom: r.uom,
+                    cost: r.cost, daily: r.daily, weekly: r.weekly, monthly: r.monthly,
+                    status: 'Active'
+                }));
+                const { error } = await SB.from('items').insert(rows);
+                if (error) { failed += toInsert.length; }
+                else {
+                    inserted += toInsert.length;
+                    toInsert.forEach(r => {
+                        DB.items.push({ ...r, createdAt: nowISO() });
+                        existingCodes.add(r.code);
+                    });
+                }
+            } else {
+                // add or update — upsert by id
+                const rows = chunk.map(r => ({
+                    id: r.id, code: r.code, name: r.name, cat: r.cat, uom: r.uom,
+                    cost: r.cost, daily: r.daily, weekly: r.weekly, monthly: r.monthly,
+                    status: 'Active'
+                }));
+                const { error } = await SB.from('items').upsert(rows, { onConflict: 'id' });
+                if (error) { failed += rows.length; }
+                else {
+                    updated += rows.length;
+                    // Refresh memory
+                    rows.forEach(r => {
+                        const idx = DB.items.findIndex(x => x.id === r.id);
+                        if (idx >= 0) Object.assign(DB.items[idx], r);
+                        else DB.items.push({ ...r, createdAt: nowISO() });
+                    });
+                }
+            }
+        }
+
+        _importParsed = null;
+        closeModal();
+        const msg = mode === 'replace'
+            ? `Replaced all items — ${updated} imported${failed > 0 ? `, ${failed} failed` : ''}`
+            : mode === 'add'
+                ? `Added ${inserted} new items${skipped > 0 ? `, skipped ${skipped} existing` : ''}${failed > 0 ? `, ${failed} failed` : ''}`
+                : `Imported ${updated} items (updated/inserted)${failed > 0 ? `, ${failed} failed` : ''}`;
+        toast(msg, failed > 0 ? 'error' : 'success');
+        showPage('items');
+
+    } catch(err) {
+        btn.disabled = false;
+        btn.textContent = 'Import';
+        toast('Import failed: ' + (err.message || err), 'error');
+    }
 }
 /* ---------- BOM ---------- */
 RENDERERS.bom = function(){
