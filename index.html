@@ -2914,7 +2914,7 @@ async function saveBOM(editId){
     }
     showPage('bom');
     }
-    /* ---------- BOM IMPORT FROM EXCEL ---------- */
+ /* ---------- BOM IMPORT FROM EXCEL ---------- */
 let _bomImportParsed = null;
 
 function openBOMImportModal(){
@@ -2929,7 +2929,7 @@ function openBOMImportModal(){
             <br><br>
             Multiple rows with the same <code>INVD_ITEM</code> are grouped into <b>one BOM</b> —
             each row becomes one ingredient line.<br>
-            <b>Ingredient Codes must exist in Item Master</b> — unknown codes are rejected.
+            <b>Ingredients missing from Item Master are auto-created</b> with cost 0 and D/W/M off.
         </div>
         <div class="form-row">
             <label>Import Mode</label>
@@ -2970,6 +2970,168 @@ async function handleBOMImportFile(evt){
     };
     reader.readAsArrayBuffer(file);
     evt.target.value = '';
+}
+
+function parseBOMImport(rows, filename){
+    if (rows.length === 0) { toast('File is empty', 'error'); return; }
+
+    // Header matcher — case-insensitive, trims spaces
+    const H = {
+        productId:   ['invd_item','invd item','product id','productid','product_code','product code','sku'],
+        productName: ['mi_longname','mi longname','product name','productname','description'],
+        itemCode:    ['code','item code','itemcode','item_code','ingredient code'],
+        itemName:    ['name','item name','itemname','item_name','ingredient name'],
+        category:    ['category','cat','group'],
+        uom:         ['uom','unit','unit of measure'],
+        qty:         ['qty','quantity','aug qty (as stored)','qty (as stored)','qty sold']
+    };
+    function pick(obj, keys){
+        for (const k of Object.keys(obj)) {
+            const norm = k.toLowerCase().trim().replace(/\s+/g,' ');
+            if (keys.includes(norm)) return obj[k];
+        }
+        return undefined;
+    }
+    function pickQty(obj){
+        const direct = pick(obj, H.qty);
+        if (direct !== undefined && direct !== '') return direct;
+        for (const k of Object.keys(obj)) {
+            if (/qty|quantity/i.test(k)) return obj[k];
+        }
+        return undefined;
+    }
+
+    // Build a code → item map from existing items
+    const itemByCode = new Map();
+    DB.items.forEach(i => itemByCode.set(String(i.code).trim().toLowerCase(), i));
+
+    const grouped = new Map();       // productId → { productId, productName, cat, lines: [] }
+    const newItems = new Map();      // codeLower → { id, code, name, cat, uom, cost }
+    const errors = [];
+    const warnings = [];
+    let rowNo = 1;
+
+    rows.forEach((row, i) => {
+        rowNo = i + 2;
+        const productIdRaw = String(pick(row, H.productId) || '').trim();
+        const productNameRaw = String(pick(row, H.productName) || '').trim();
+        const itemCodeRaw = String(pick(row, H.itemCode) || '').trim();
+        const itemNameRaw = String(pick(row, H.itemName) || '').trim();
+        const catRaw = String(pick(row, H.category) || '').trim() || 'Uncategorized';
+        const uomRaw = String(pick(row, H.uom) || '').trim() || 'PCS';
+        const qtyRaw = pickQty(row);
+
+        // Skip fully blank rows
+        if (!productIdRaw && !itemCodeRaw && qtyRaw === '') return;
+
+        if (!productIdRaw) { errors.push({ line: rowNo, msg: 'Missing INVD_ITEM (Product ID)' }); return; }
+        if (!productNameRaw) { warnings.push({ line: rowNo, msg: `Product "${productIdRaw}" has no MI_LONGNAME — using Product ID as name` }); }
+        if (!itemCodeRaw) { errors.push({ line: rowNo, msg: `Product "${productIdRaw}": missing ingredient Code` }); return; }
+
+        const qty = Number(qtyRaw);
+        if (isNaN(qty) || qty <= 0) { errors.push({ line: rowNo, msg: `Product "${productIdRaw}": invalid qty "${qtyRaw}" for ${itemCodeRaw}` }); return; }
+
+        // ── Resolve the ingredient: existing item OR auto-create ──
+        const key = itemCodeRaw.toLowerCase();
+        let item = itemByCode.get(key);
+        if (!item) {
+            if (!newItems.has(key)) {
+                const newId = 'i-' + itemCodeRaw.toLowerCase().replace(/[^a-z0-9]/g, '');
+                newItems.set(key, {
+                    id: newId,
+                    code: itemCodeRaw,
+                    name: itemNameRaw || itemCodeRaw,
+                    cat: catRaw,
+                    uom: uomRaw,
+                    cost: 0
+                });
+            }
+            item = newItems.get(key);
+        }
+
+        const prodKey = productIdRaw.toLowerCase();
+        if (!grouped.has(prodKey)) {
+            grouped.set(prodKey, {
+                productId: productIdRaw,
+                productName: productNameRaw || productIdRaw,
+                cat: catRaw,
+                lines: [],
+                seenItems: new Set()
+            });
+        }
+        const g = grouped.get(prodKey);
+        if (g.seenItems.has(item.id)) {
+            warnings.push({ line: rowNo, msg: `Product "${productIdRaw}": duplicate ingredient ${itemCodeRaw} — qty added` });
+            const existing = g.lines.find(l => l.itemId === item.id);
+            existing.qty += qty;
+            return;
+        }
+        g.seenItems.add(item.id);
+        g.lines.push({
+            itemId: item.id,
+            itemCode: item.code,
+            itemName: item.name,
+            qty: qty,
+            uom: uomRaw || item.uom || 'PCS'
+        });
+    });
+
+    const boms = [...grouped.values()].map(g => ({
+        productId: g.productId,
+        productName: g.productName,
+        cat: g.cat,
+        lines: g.lines
+    }));
+
+    const newItemList = [...newItems.values()];
+
+    _bomImportParsed = { boms, newItems: newItemList, errors, warnings, filename };
+
+    // Render preview
+    const totalLines = boms.reduce((s,b) => s + b.lines.length, 0);
+    const preview = document.getElementById('bomImpPreview');
+    const sample = boms.slice(0, 5);
+    preview.innerHTML = `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:10px">
+            <b>File:</b> ${esc(filename)} &nbsp;·&nbsp;
+            <span class="green"><b>${boms.length}</b> BOMs</span> ·
+            <span class="green"><b>${totalLines}</b> ingredient lines</span>
+            ${newItemList.length > 0 ? ` · <span style="color:#7c3aed"><b>${newItemList.length}</b> new items will be created</span>` : ''}
+            ${warnings.length > 0 ? ` · <span class="orange"><b>${warnings.length}</b> warnings</span>` : ''}
+            ${errors.length > 0 ? ` · <span class="red"><b>${errors.length}</b> errors</span>` : ''}
+        </div>
+        ${newItemList.length > 0 ? `
+        <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;padding:10px 12px;font-size:12px;margin-bottom:10px;color:#5b21b6">
+            ℹ <b>${newItemList.length} ingredient(s)</b> aren't in Item Master yet — they'll be auto-created with
+            <b>cost 0</b> and <b>D / W / M = OFF</b> (you can enable them later per need).
+            Preview: ${newItemList.slice(0,8).map(x => `<code>${esc(x.code)}</code>`).join(', ')}${newItemList.length > 8 ? ` …+${newItemList.length-8} more` : ''}
+        </div>` : ''}
+        ${sample.length > 0 ? `
+        <div style="max-height:220px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+            <table style="font-size:12px">
+                <thead><tr><th>Product ID</th><th>Product Name</th><th>Category</th><th>Ingredients</th></tr></thead>
+                <tbody>${sample.map(b => `
+                    <tr>
+                        <td><span class="bom-pid">${esc(b.productId)}</span></td>
+                        <td>${esc(b.productName)}</td>
+                        <td>${esc(b.cat)}</td>
+                        <td>${b.lines.length} (${b.lines.slice(0,3).map(l => esc(l.itemCode)).join(', ')}${b.lines.length > 3 ? '…' : ''})</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>
+        ${boms.length > 5 ? `<p style="font-size:12px;color:#6b7280;margin-top:6px">…and ${boms.length - 5} more BOMs</p>` : ''}
+        ` : ''}
+        ${errors.length > 0 ? `
+            <div style="margin-top:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;max-height:150px;overflow-y:auto">
+                <b style="color:#b91c1c">Errors:</b>
+                ${errors.slice(0, 25).map(e => `<div>Line ${e.line}: ${esc(e.msg)}</div>`).join('')}
+                ${errors.length > 25 ? `<div>…and ${errors.length - 25} more</div>` : ''}
+            </div>` : ''}
+    `;
+
+    const btn = document.getElementById('bomImpConfirmBtn');
+    if (btn) btn.disabled = boms.length === 0;
 }
 
 async function confirmBOMImport(){
@@ -3020,167 +3182,6 @@ async function confirmBOMImport(){
                 itemsCreated += rows.length;
             }
             toast(`Created ${itemsCreated} new item(s) — D/W/M off`, 'success');
-        }
-
-        // ── STEP 2: Wipe BOMs if replace mode ──
-        if (mode === 'replace') {
-            btn.textContent = `Deleting ${DB.bom.length} existing BOMs…`;
-            const { error: e1 } = await SB.from('bom_lines').delete().neq('bom_id', '___never___');
-            if (e1) throw e1;
-            const { error: e2 } = await SB.from('bom').delete().neq('id', '___never___');
-            if (e2) throw e2;
-            DB.bom = [];
-        }
-
-        // ── STEP 3: Import BOMs ──
-        const existingByProduct = new Map();
-        DB.bom.forEach(b => existingByProduct.set(norm(b.productId), b));
-
-        let inserted = 0, updated = 0, skipped = 0, failed = 0;
-        let bomCounter = DB.bom.length;
-
-        for (const b of boms) {
-            const key = norm(b.productId);
-            const existing = existingByProduct.get(key);
-
-            if (mode === 'add' && existing) { skipped++; continue; }
-
-            const effective = todayISO();
-            const version = 1;
-            const status = 'Active';
-
-            if (existing) {
-                try {
-                    const { error: eUpd } = await SB.from('bom').update({
-                        product_name: b.productName,
-                        cat: b.cat,
-                        version, effective
-                    }).eq('id', existing.id);
-                    if (eUpd) throw eUpd;
-
-                    const { error: eDel } = await SB.from('bom_lines').delete().eq('bom_id', existing.id);
-                    if (eDel) throw eDel;
-
-                    const { error: eIns } = await SB.from('bom_lines').insert(
-                        b.lines.map(l => ({
-                            bom_id: existing.id,
-                            item_id: l.itemId,
-                            item_code: l.itemCode,
-                            item_name: l.itemName,
-                            qty: l.qty,
-                            uom: l.uom
-                        }))
-                    );
-                    if (eIns) throw eIns;
-
-                    existing.productName = b.productName;
-                    existing.cat = b.cat;
-                    existing.version = version;
-                    existing.effective = effective;
-                    existing.lines = b.lines.map(l => ({ ...l }));
-                    updated++;
-                } catch(err) {
-                    console.error('Update failed for', b.productId, err);
-                    failed++;
-                }
-            } else {
-                bomCounter++;
-                const id = 'BOM-' + String(bomCounter).padStart(5, '0');
-                try {
-                    const { error: e1 } = await SB.from('bom').insert({
-                        id, product_id: b.productId, product_name: b.productName,
-                        cat: b.cat, version, effective, status
-                    });
-                    if (e1) throw e1;
-
-                    const { error: e2 } = await SB.from('bom_lines').insert(
-                        b.lines.map(l => ({
-                            bom_id: id,
-                            item_id: l.itemId,
-                            item_code: l.itemCode,
-                            item_name: l.itemName,
-                            qty: l.qty,
-                            uom: l.uom
-                        }))
-                    );
-                    if (e2) throw e2;
-
-                    const rec = {
-                        id, productId: b.productId, productName: b.productName,
-                        cat: b.cat, version, effective, status,
-                        lines: b.lines.map(l => ({ ...l }))
-                    };
-                    DB.bom.push(rec);
-                    existingByProduct.set(key, rec);
-                    inserted++;
-                } catch(err) {
-                    console.error('Insert failed for', b.productId, err);
-                    failed++;
-                }
-            }
-
-            btn.textContent = `Importing BOMs… ${inserted + updated + skipped + failed} / ${boms.length}`;
-        }
-
-        _bomImportParsed = null;
-        closeModal();
-        const itemMsg = (newItems && newItems.length > 0) ? `${newItems.length} new items · ` : '';
-        const msg = mode === 'replace'
-            ? `${itemMsg}Replaced all BOMs — ${inserted} imported${failed > 0 ? `, ${failed} failed` : ''}`
-            : mode === 'add'
-                ? `${itemMsg}Added ${inserted} new BOMs${skipped > 0 ? `, skipped ${skipped}` : ''}${failed > 0 ? `, ${failed} failed` : ''}`
-                : `${itemMsg}Imported ${inserted} new + ${updated} updated BOMs${failed > 0 ? `, ${failed} failed` : ''}`;
-        toast(msg, failed > 0 ? 'error' : 'success');
-        showPage('bom');
-
-    } catch(err) {
-        btn.disabled = false;
-        btn.textContent = 'Import';
-        toast('Import failed: ' + (err.message || err), 'error');
-    }
-}
-
-async function confirmBOMImport(){
-    if (!_bomImportParsed) { toast('No file loaded', 'error'); return; }
-    const { boms, newItems } = _bomImportParsed;
-    if (boms.length === 0) { toast('No valid BOMs', 'error'); return; }
-
-    const mode = document.getElementById('bomImpMode').value;
-
-    if (mode === 'replace') {
-        if (!confirm(`⚠ REPLACE ALL mode:\n\nThis will DELETE all ${DB.bom.length} existing BOMs, then import ${boms.length} BOMs.\n\nContinue?`)) return;
-        if (!confirm('This cannot be undone. Really proceed?')) return;
-    }
-
-    const btn = document.getElementById('bomImpConfirmBtn');
-    btn.disabled = true;
-    btn.textContent = 'Importing…';
-
-    try {
-        // ── STEP 1: Auto-create missing items (if any) ──
-        if (newItems && newItems.length > 0) {
-            btn.textContent = `Creating ${newItems.length} new items…`;
-            const CHUNK = 500;
-            let itemsCreated = 0;
-            for (let i = 0; i < newItems.length; i += CHUNK) {
-                const chunk = newItems.slice(i, i + CHUNK);
-                const rows = chunk.map(r => ({
-                    id: r.id, code: r.code, name: r.name, cat: r.cat,
-                    uom: r.uom, cost: r.cost || 0,
-                    daily: true, weekly: true, monthly: true,
-                    status: 'Active'
-                }));
-                const { error } = await SB.from('items').upsert(rows, { onConflict: 'id' });
-                if (error) throw new Error('Item creation failed: ' + error.message);
-                // Sync in-memory
-                rows.forEach(r => {
-                    const idx = DB.items.findIndex(x => x.id === r.id);
-                    if (idx >= 0) Object.assign(DB.items[idx], r);
-                    else DB.items.push({ ...r, createdAt: nowISO() });
-                });
-                itemsCreated += rows.length;
-            }
-            toast(`Created ${itemsCreated} new item(s)`, 'success');
         }
 
         // ── STEP 2: Wipe BOMs if replace mode ──
