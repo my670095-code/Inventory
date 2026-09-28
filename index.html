@@ -4676,36 +4676,58 @@ RENDERERS.purchases = function(){
     return `
     <div class="scope-banner"><b>Scope:</b> ${esc(scopeLabel(u))}</div>
     <div class="toolbar">
+        <input type="text" id="purchSearch" placeholder="Search ID or supplier..." oninput="filterPurchases()">
         <select id="purchStoreFilter" onchange="filterPurchases()">
             <option value="">All Stores</option>
             ${myStores.map(s => `<option value="${s.id}">${s.code} — ${esc(s.name)}</option>`).join('')}
         </select>
         ${canCreate && myStores.length > 0 ? `<button class="btn-primary" onclick="openPurchaseModal()">+ New Purchase</button>` : ''}
+        ${canCreate && myStores.length > 0 ? `<button class="btn-light" onclick="openPurchaseImportModal()">📥 Import PO / TO</button>` : ''}
     </div>
     <div class="panel">
-        <div class="panel-header"><div class="panel-title">Purchases</div>
-        <span class="badge badge-blue">${rows.length}</span></div>
+        <div class="panel-header"><div class="panel-title">Purchases (Stock In)</div>
+        <span class="badge badge-blue" id="purchCount">${rows.length}</span></div>
         <div class="panel-body" id="purchListBody">${renderPurchasesTable(rows)}</div>
     </div>`;
 };
 function renderPurchasesTable(rows){
     if (rows.length === 0) return '<div class="empty">No purchases yet</div>';
-    return `<table><thead><tr><th>ID</th><th>Date</th><th>Store</th><th>Supplier</th><th>Total</th><th>Actions</th></tr></thead>
+    return `<table><thead><tr>
+        <th>ID</th><th>Type</th><th>Date</th><th>Store</th><th>Source / Supplier</th>
+        <th style="text-align:right">Total</th><th style="text-align:center">Lines</th><th>Actions</th>
+    </tr></thead>
         <tbody>${rows.map(p => {
             const t = p.lines.reduce((s,l) => s + (l.qty * (l.cost||0)), 0);
+            const type = p.sourceType === 'TO'
+                ? `<span class="badge badge-cyan">TO</span>`
+                : `<span class="badge badge-green">PO</span>`;
+            const supplier = p.supplier
+                ? esc(p.supplier)
+                : (p.sourceType === 'TO' ? '<span style="color:#0e7490">Central Warehouse</span>' : '<span style="color:#9ca3af">—</span>');
             return `<tr>
-                <td><b>${esc(p.id)}</b></td><td>${esc(p.date)}</td>
-                <td>${esc(storeLabel(p.storeId))}</td><td>${esc(p.supplier||'—')}</td>
-                <td>SAR ${fmtNum(t)}</td>
-                <td class="actions-cell">${deleteBtn('purchase', p.id)}</td></tr>`;
+                <td><b>${esc(p.id)}</b></td>
+                <td>${type}</td>
+                <td>${esc(p.date)}</td>
+                <td>${esc(storeLabel(p.storeId))}</td>
+                <td>${supplier}</td>
+                <td style="text-align:right">SAR ${fmtNum(t)}</td>
+                <td style="text-align:center">${p.lines.length}</td>
+                <td class="actions-cell">
+                    <button class="btn-light btn-xs" onclick="viewPurchase('${p.id}')">View</button>
+                    ${deleteBtn('purchase', p.id)}
+                </td></tr>`;
         }).join('')}</tbody></table>`;
 }
 function filterPurchases(){
+    const q = (document.getElementById('purchSearch')?.value || '').toLowerCase();
     const sf = document.getElementById('purchStoreFilter').value;
     const myStoreIds = new Set(getMyStores());
     let rows = DB.purchases.filter(p => myStoreIds.has(p.storeId)).slice().reverse();
     if (sf) rows = rows.filter(p => p.storeId===sf);
+    if (q) rows = rows.filter(p => (p.id + ' ' + (p.supplier||'') + ' ' + (p.sourceType||'')).toLowerCase().includes(q));
     document.getElementById('purchListBody').innerHTML = renderPurchasesTable(rows);
+    const cnt = document.getElementById('purchCount');
+    if (cnt) cnt.textContent = rows.length;
 }
 function openPurchaseModal(){
     const u = currentUser();
@@ -4776,6 +4798,333 @@ async function savePurchase(){
     DB.purchases.push(rec);
     window._workingPurchase = null; closeModal();
     toast(`Purchase ${id} saved`, 'success'); showPage('purchases');
+}
+    /* ---------- PURCHASE IMPORT (PO / TO) ---------- */
+let _purchImportParsed = null;
+
+function openPurchaseImportModal(){
+    if (!can('createPurchase')) { toast('Access denied.', 'error'); return; }
+    const myStores = getMyStoreObjects(currentUser());
+    if (myStores.length === 0) { toast('No stores in scope.', 'error'); return; }
+    _purchImportParsed = null;
+
+    openModal('Import Stock In (PO or TO)', `
+        <div class="info-block">
+            <b>Accepted formats (auto-detected):</b><br>
+            • <b>PO.xlsx</b> — Purchase Order &nbsp;·&nbsp; cols: <code>Item number</code>, <code>Quantity</code>, <code>Unit price</code>, <code>Warehouse</code><br>
+            • <b>TO.xlsx</b> — Transfer Order &nbsp;·&nbsp; cols: <code>Item number</code>, <code>St.Qty</code>, <code>To warehouse</code>, <code>Date</code>
+        </div>
+
+        <div class="form-grid">
+            <div class="form-row">
+                <label>Purchase Date <span style="color:#dc2626">*</span></label>
+                <input type="date" id="purchImpDate" value="${todayISO()}">
+            </div>
+            <div class="form-row">
+                <label>Supplier / Source Name</label>
+                <input id="purchImpSupplier" placeholder="Auto from file / blank = default">
+            </div>
+        </div>
+
+        <div class="form-row">
+            <label>Store override <i>(blank = use file's warehouse column)</i></label>
+            <select id="purchImpStore">
+                <option value="">— Use file's warehouse —</option>
+                ${myStores.map(s => `<option value="${s.id}">${s.code} — ${esc(s.name)}</option>`).join('')}
+            </select>
+        </div>
+
+        <div class="upload-drop" onclick="document.getElementById('purchImpFile').click()">
+            <div class="upload-icon">📊</div>
+            <div class="upload-text">Click to upload PO or TO Excel</div>
+            <div class="upload-hint">.xlsx, .xls, .csv — auto-detected</div>
+        </div>
+        <input type="file" id="purchImpFile" class="upload-file" accept=".xlsx,.xls,.csv" onchange="handlePurchImportFile(event)">
+        <div id="purchImpPreview" style="margin-top:16px"></div>
+    `, `
+        <button class="btn-light" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" id="purchImpConfirmBtn" onclick="confirmPurchImport()" disabled>Import</button>
+    `);
+}
+
+async function handlePurchImportFile(evt){
+    const file = evt.target.files[0];
+    if (!file) return;
+    if (!XLSX_READY) { toast('Excel library still loading. Try again in 2 seconds.', 'error'); evt.target.value=''; return; }
+    const reader = new FileReader();
+    reader.onload = function(e){
+        try {
+            const data = new Uint8Array(e.target.result);
+            const wb = XLSX.read(data, { type:'array', cellDates: true });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { defval:'', raw: true });
+            parsePurchImport(rows, file.name);
+        } catch(err) {
+            toast('Parse failed: ' + err.message, 'error');
+        }
+    };
+    reader.readAsArrayBuffer(file);
+    evt.target.value = '';
+}
+
+function detectPurchFileType(row){
+    const keys = Object.keys(row).map(k => k.toLowerCase().trim());
+    const has = arr => arr.some(x => keys.includes(x));
+    if (has(['st.qty','st qty']) && has(['from warehouse','to warehouse','log_status','log status'])) return 'TO';
+    if (has(['unit price']) && has(['line number','dimension value','net amount','procurement category'])) return 'PO';
+    if (has(['st.qty','st qty'])) return 'TO';
+    if (has(['unit price'])) return 'PO';
+    return null;
+}
+
+function _pick(obj, keys){
+    for (const k of Object.keys(obj)) {
+        const n = k.toLowerCase().trim().replace(/\s+/g,' ');
+        if (keys.includes(n)) return obj[k];
+    }
+    return undefined;
+}
+function _pickQty(row){
+    let v = _pick(row, ['quantity','qty','st.qty','st qty']);
+    if (v !== undefined && v !== '') return v;
+    for (const k of Object.keys(row)) if (/qty|quantity/i.test(k)) return row[k];
+    return undefined;
+}
+
+function parsePurchImport(rows, filename){
+    if (rows.length === 0) { toast('File is empty', 'error'); return; }
+
+    const fileType = detectPurchFileType(rows[0]);
+    if (!fileType) { toast('Cannot detect file type. Expected PO or TO columns.', 'error'); return; }
+
+    const overrideStoreId = document.getElementById('purchImpStore').value;
+
+    // Lookups
+    const itemByCode = new Map();
+    DB.items.forEach(i => itemByCode.set(String(i.code).trim().toLowerCase(), i));
+
+    const storeByWarehouse = new Map();
+    const storeByCode = new Map();
+    DB.stores.forEach(s => {
+        storeByCode.set(String(s.code).trim().toLowerCase(), s);
+        if (s.warehouseCode) storeByWarehouse.set(String(s.warehouseCode).trim().toLowerCase(), s);
+        if (s.name) storeByWarehouse.set(String(s.name).trim().toLowerCase(), s);
+    });
+
+    const parsed = [];
+    const errors = [];
+    const warnings = [];
+    const resolvedStores = new Set();
+    let fileDate = null;
+
+    rows.forEach((row, i) => {
+        const rowNo = i + 2;
+        const itemCodeRaw = String(_pick(row, ['item number','itemnumber','item code','itemcode','code','sku','invd_item']) || '').trim();
+        const qtyRaw = _pickQty(row);
+        if (!itemCodeRaw && (qtyRaw === '' || qtyRaw === undefined)) return;
+        if (!itemCodeRaw) { errors.push({ line: rowNo, msg: 'Missing Item number' }); return; }
+
+        const qty = Number(qtyRaw);
+        if (isNaN(qty) || qty <= 0) { errors.push({ line: rowNo, msg: `Invalid qty "${qtyRaw}"` }); return; }
+
+        let cost = Number(_pick(row, ['unit price','unitprice','price','cost','unit cost'])) || 0;
+        const item = itemByCode.get(itemCodeRaw.toLowerCase());
+        if (!item) { errors.push({ line: rowNo, msg: `Item "${itemCodeRaw}" not in Item Master` }); return; }
+        if (cost === 0) cost = item.cost || 0;
+
+        // Store resolution
+        let rowStoreId = overrideStoreId;
+        if (!rowStoreId) {
+            let wh = '';
+            if (fileType === 'TO') {
+                wh = String(_pick(row, ['to warehouse','warehouse','warehouse code']) || '').trim().toLowerCase();
+            } else {
+                wh = String(_pick(row, ['warehouse','to warehouse','warehouse code']) || '').trim().toLowerCase();
+            }
+            const dim = String(_pick(row, ['dimension value','dimension','store','store code']) || '').trim().toLowerCase();
+            let store = null;
+            if (wh) store = storeByWarehouse.get(wh) || storeByCode.get(wh);
+            if (!store && dim) store = storeByCode.get(dim);
+            if (!store) { errors.push({ line: rowNo, msg: `Cannot resolve store (wh="${wh}", dim="${dim}")` }); return; }
+            rowStoreId = store.id;
+        }
+        if (!isInScope(rowStoreId)) { errors.push({ line: rowNo, msg: 'Store out of scope' }); return; }
+        resolvedStores.add(rowStoreId);
+
+        // File date (TO has one)
+        if (!fileDate) {
+            const d = _pick(row, ['date','to date','transfer date']);
+            if (d) {
+                if (d instanceof Date) fileDate = d.toISOString().slice(0,10);
+                else if (typeof d === 'string' && d.length >= 10) fileDate = d.slice(0,10);
+            }
+        }
+
+        parsed.push({
+            line: rowNo, itemId: item.id, itemCode: item.code, itemName: item.name,
+            qty, uom: String(_pick(row, ['unit','uom','po unit','unit of measure']) || item.uom || 'PCS').trim(),
+            cost, storeId: rowStoreId
+        });
+    });
+
+    if (resolvedStores.size > 1) {
+        errors.push({ line: '—', msg: `Rows span ${resolvedStores.size} stores. Split or use override.` });
+    }
+
+    // Dedupe
+    const seen = new Map();
+    parsed.forEach(p => {
+        if (seen.has(p.itemId)) {
+            warnings.push({ line: p.line, msg: `Duplicate ${p.itemCode} — qty summed` });
+            seen.get(p.itemId).qty += p.qty;
+        } else seen.set(p.itemId, p);
+    });
+    const deduped = [...seen.values()];
+
+    _purchImportParsed = {
+        fileType, lines: deduped,
+        storeId: resolvedStores.size === 1 ? [...resolvedStores][0] : null,
+        fileDate, errors, warnings, filename
+    };
+
+    // Auto-fill
+    if (fileDate) {
+        const dateEl = document.getElementById('purchImpDate');
+        if (dateEl) dateEl.value = fileDate;
+    }
+    if (fileType === 'TO') {
+        const supEl = document.getElementById('purchImpSupplier');
+        if (supEl && !supEl.value) supEl.value = 'Central Warehouse (TO)';
+    }
+
+    // Preview
+    const p = _purchImportParsed;
+    const totalValue = p.lines.reduce((s,l) => s + l.qty * l.cost, 0);
+    const sample = p.lines.slice(0, 10);
+    const storeName = p.storeId ? storeLabel(p.storeId) : '⚠ multiple';
+    const typeBadge = p.fileType === 'TO'
+        ? `<span class="badge badge-cyan">TO · Transfer In</span>`
+        : `<span class="badge badge-green">PO · Supplier</span>`;
+
+    document.getElementById('purchImpPreview').innerHTML = `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:10px">
+            ${typeBadge} &nbsp; <b>${esc(p.filename)}</b><br>
+            <b>Store:</b> ${esc(storeName)}<br>
+            <span class="green"><b>${p.lines.length}</b> valid lines</span> · <b>SAR ${fmtNum(totalValue)}</b>
+            ${p.warnings.length ? ` · <span class="orange">${p.warnings.length} warnings</span>` : ''}
+            ${p.errors.length ? ` · <span class="red">${p.errors.length} errors</span>` : ''}
+        </div>
+        ${sample.length > 0 ? `
+        <div style="max-height:260px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+            <table style="font-size:12px">
+                <thead><tr><th>Code</th><th>Item</th><th>UOM</th>
+                <th style="text-align:right">Qty</th><th style="text-align:right">Cost</th><th style="text-align:right">Value</th></tr></thead>
+                <tbody>${sample.map(r => `<tr>
+                    <td>${esc(r.itemCode)}</td><td>${esc(r.itemName)}</td><td>${esc(r.uom)}</td>
+                    <td style="text-align:right">${r.qty}</td>
+                    <td style="text-align:right">${fmtNum(r.cost)}</td>
+                    <td style="text-align:right">${fmtNum(r.qty*r.cost)}</td>
+                </tr>`).join('')}</tbody>
+            </table>
+        </div>
+        ${p.lines.length > 10 ? `<p style="font-size:12px;color:#6b7280;margin-top:6px">…and ${p.lines.length - 10} more lines</p>` : ''}
+        ` : ''}
+        ${p.errors.length > 0 ? `
+            <div style="margin-top:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;max-height:180px;overflow-y:auto">
+                <b style="color:#b91c1c">Errors:</b>
+                ${p.errors.slice(0,30).map(e => `<div>Line ${e.line}: ${esc(e.msg)}</div>`).join('')}
+            </div>` : ''}
+    `;
+
+    const btn = document.getElementById('purchImpConfirmBtn');
+    if (btn) btn.disabled = p.lines.length === 0 || p.storeId === null;
+}
+
+async function confirmPurchImport(){
+    const p = _purchImportParsed;
+    if (!p) { toast('No file loaded', 'error'); return; }
+    if (!p.storeId) { toast('Cannot import — rows span multiple stores.', 'error'); return; }
+    if (p.lines.length === 0) { toast('No valid lines', 'error'); return; }
+
+    const date = document.getElementById('purchImpDate').value;
+    const supplier = document.getElementById('purchImpSupplier').value.trim();
+    if (!date) { toast('Date required', 'error'); return; }
+
+    const monthTag = monthTagFromISO(date);
+    if (isMonthClosed(p.storeId, monthTag)) { toast(`${monthTag} is closed for this store.`, 'error'); return; }
+
+    const btn = document.getElementById('purchImpConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Importing…';
+
+    try {
+        const u = currentUser();
+        const id = nextMovementId('PO', DB.purchases, date);
+
+        const rec = {
+            id,
+            storeId: p.storeId,
+            date,
+            supplier: supplier || (p.fileType === 'TO' ? 'Central Warehouse (TO)' : ''),
+            sourceType: p.fileType,
+            sourceFile: p.filename,
+            lines: p.lines.map(l => ({ itemId: l.itemId, qty: l.qty, uom: l.uom, cost: l.cost || 0 })),
+            byId: u.id, byName: u.name,
+            status: 'Posted', createdAt: nowISO()
+        };
+
+        await DataLayer.insertPurchase(rec);
+        DB.purchases.push(rec);
+        audit('IMPORT','purchase', id, { type: p.fileType, lines: p.lines.length, source: p.filename });
+
+        _purchImportParsed = null;
+        closeModal();
+        toast(`Imported ${p.fileType} ${id} — ${p.lines.length} lines`, 'success');
+        showPage('purchases');
+    } catch(err) {
+        btn.disabled = false;
+        btn.textContent = 'Import';
+        toast('Import failed: ' + (err.message || err), 'error');
+    }
+}
+
+function viewPurchase(id){
+    const p = DB.purchases.find(x => x.id === id);
+    if (!p) return;
+    const modalBox = document.getElementById('modalBox');
+    modalBox.className = 'modal modal-wide';
+    const total = p.lines.reduce((s,l) => s + l.qty * (l.cost||0), 0);
+    const typeTag = p.sourceType === 'TO'
+        ? `<span class="badge badge-cyan">TO · Transfer In</span>`
+        : `<span class="badge badge-green">PO · Supplier</span>`;
+    document.getElementById('modalTitle').innerHTML =
+        `Purchase <span style="color:#2563eb">${esc(p.id)}</span> ${typeTag}`;
+    document.getElementById('modalBody').innerHTML = `
+        <div class="journal-meta">
+            <div><div class="k">Date</div><div class="v">${esc(p.date)}</div></div>
+            <div><div class="k">Store</div><div class="v">${esc(storeLabel(p.storeId))}</div></div>
+            <div><div class="k">Source</div><div class="v">${esc(p.supplier || '—')}</div></div>
+            <div><div class="k">Total</div><div class="v">SAR ${fmtNum(total)}</div></div>
+        </div>
+        <div class="journal-table-wrap"><table>
+            <thead><tr><th>Code</th><th>Item</th><th>UOM</th>
+            <th style="text-align:right">Qty</th><th style="text-align:right">Cost</th><th style="text-align:right">Value</th></tr></thead>
+            <tbody>${p.lines.map(l => {
+                const it = getItem(l.itemId);
+                const c = l.cost || 0;
+                return `<tr>
+                    <td>${esc(it?it.code:'?')}</td>
+                    <td>${esc(it?it.name:'Unknown')}</td>
+                    <td>${esc(l.uom)}</td>
+                    <td style="text-align:right">${fmtNum(l.qty)}</td>
+                    <td style="text-align:right">${fmtNum(c)}</td>
+                    <td style="text-align:right"><b>${fmtNum(l.qty*c)}</b></td>
+                </tr>`;
+            }).join('')}</tbody>
+        </table></div>
+    `;
+    document.getElementById('modalFooter').innerHTML = `<button class="btn-light" onclick="closeModal()">Close</button>`;
+    document.getElementById('modalOverlay').classList.add('show');
 }
 
 /* ---------- REPORTS ---------- */
