@@ -12,7 +12,7 @@
 <div id="loginScreen" class="login-wrap">
     <div class="login-card">
         <div class="login-brand">
-            <img src="https://placehold.co/400x90/1a7a4c/ffffff?text=ViewX+%7C+Powered By+Yousuf"
+            <img src="https://placehold.co/400x90/0B3D91/ffffff?text=ViewX+%7C+Powered+By+Yousuf" ...>
                  alt="ViewX"
                  class="login-brand-img">
         </div>
@@ -36,7 +36,10 @@
 <!-- APP -->
 <div id="appScreen" style="display:none">
 <div class="sidebar">
-    <div class="logo"><span>ViewX</span> ERP</div>
+    <div class="logo">
+  <span style="color:#fff">View</span><span style="color:#00A3FF">X</span>
+  <span style="color:#94A3B8;font-size:11px;font-weight:500;letter-spacing:2px;margin-left:6px">ERP</span>
+</div>
     <div id="sidebarMenu"></div>
 </div>
 <div class="main">
@@ -349,6 +352,203 @@ input:focus, select:focus { outline:none; border-color:#1a7a4c; box-shadow:0 0 0
     .form-grid, .form-grid-3 { grid-template-columns:1fr; }
     .upload-options { grid-template-columns:1fr; }
 }
+</style>
+    @media(max-width:600px) {
+    .cards { grid-template-columns:1fr; }
+    .content { padding:15px; }
+    .topbar { padding:0 15px; }
+    .form-grid, .form-grid-3 { grid-template-columns:1fr; }
+    .upload-options { grid-template-columns:1fr; }
+}
+
+/* ============================================================
+   VIEWX BRAND THEME
+   Primary Blue #0B3D91 · Accent Blue #00A3FF · Success #10B981
+   Overrides legacy green (#1a7a4c) theme without touching markup
+   ============================================================ */
+
+:root {
+    --vx-primary:      #0B3D91;
+    --vx-primary-dark: #06275F;
+    --vx-accent:       #00A3FF;
+    --vx-accent-dark:  #0077CC;
+    --vx-success:      #10B981;
+    --vx-success-dark: #0E9F70;
+    --vx-text:         #1F2937;
+    --vx-muted:        #6B7280;
+    --vx-border:       #DCE5F0;
+    --vx-bg:           #F8FAFC;
+}
+
+/* Body background */
+body { background: var(--vx-bg); }
+
+/* ---------- SIDEBAR ---------- */
+.sidebar {
+    background: linear-gradient(180deg, #06275F 0%, #0B3D91 100%);
+}
+.logo span { color: var(--vx-accent); }
+.menu-title { color: #94A3B8; }
+.menu-item { color: #CBD5E1; }
+.menu-item:hover { background: rgba(0,163,255,0.10); color:#fff; }
+.menu-item.active {
+    background: rgba(0,163,255,0.14);
+    border-left: 3px solid var(--vx-accent);
+    color: #fff;
+}
+.menu-pill { background: #EF4444; }
+
+/* ---------- TOPBAR ---------- */
+.topbar { background: #fff; border-bottom: 1px solid var(--vx-border); }
+.page-title { color: var(--vx-text); }
+.role-tag { color: var(--vx-primary); }
+.avatar {
+    background: linear-gradient(135deg, #0B5ED7, #00A3FF);
+    color: #fff;
+}
+
+/* ---------- BUTTONS ---------- */
+.btn-primary {
+    background: linear-gradient(135deg, #0B5ED7, #0066FF);
+    box-shadow: 0 4px 12px rgba(0,102,255,0.20);
+}
+.btn-primary:hover {
+    background: linear-gradient(135deg, #0A4FBE, #0055DD);
+    box-shadow: 0 6px 18px rgba(0,102,255,0.28);
+}
+.btn-success { background: var(--vx-success); }
+.btn-success:hover { background: var(--vx-success-dark); }
+.btn-danger { background: #DC2626; }
+.btn-danger:hover { background: #B91C1C; }
+.btn-warn   { background: #F59E0B; }
+.btn-warn:hover { background: #D97706; }
+
+/* ---------- LOGIN SCREEN ---------- */
+.login-wrap {
+    background: linear-gradient(135deg, #06275F 0%, #0B3D91 100%);
+}
+.login-btn {
+    background: linear-gradient(135deg, #0B5ED7, #0066FF);
+    box-shadow: 0 8px 20px rgba(0,102,255,0.20);
+}
+.login-btn:hover { background: linear-gradient(135deg, #0A4FBE, #0055DD); }
+.login-error { background:#FEE2E2; color:#B91C1C; }
+
+/* ---------- INPUTS & FOCUS ---------- */
+input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--vx-accent);
+    box-shadow: 0 0 0 3px rgba(0,163,255,0.15);
+}
+.field input:focus {
+    border-color: var(--vx-accent);
+    box-shadow: 0 0 0 3px rgba(0,163,255,0.15);
+}
+
+/* ---------- CARDS ---------- */
+.card {
+    background: #fff;
+    border: 1px solid var(--vx-border);
+    border-radius: 10px;
+}
+.card-value { color: var(--vx-text); }
+.card-value.green { color: var(--vx-success); }
+.card-value.blue  { color: var(--vx-primary); }
+
+/* ---------- PANELS ---------- */
+.panel {
+    background: #fff;
+    border: 1px solid var(--vx-border);
+    border-radius: 10px;
+}
+.panel-header { border-bottom: 1px solid var(--vx-border); }
+
+/* ---------- TABLES ---------- */
+th {
+    background: #F1F5F9;
+    color: #475569;
+    border-bottom: 1px solid var(--vx-border);
+}
+tr:hover { background: #F8FAFC; }
+
+/* ---------- BADGES ---------- */
+.badge-green  { background:#D1FAE5; color:#065F46; }
+.badge-blue   { background:#DBEAFE; color:#1E40AF; }
+.badge-cyan   { background:#CFFAFE; color:#0E7490; }
+.badge-purple { background:#EDE9FE; color:#5B21B6; }
+.badge-orange { background:#FFEDD5; color:#C2410C; }
+.badge-red    { background:#FEE2E2; color:#B91C1C; }
+.badge-gray   { background:#F1F5F9; color:#475569; }
+
+/* ---------- SCOPE & INFO BANNERS ---------- */
+.scope-banner {
+    background: #EFF6FF;
+    border: 1px solid #BFDBFE;
+    color: #1E40AF;
+}
+.scope-banner b { color: #1E3A8A; }
+.info-block {
+    background: #EFF6FF;
+    border: 1px solid #BFDBFE;
+    color: #1E40AF;
+}
+.info-block b { color: #1E3A8A; }
+.pending-banner {
+    background: #FEF3C7;
+    border: 1px solid #FCD34D;
+    color: #92400E;
+}
+.pending-banner .count { background:#DC2626; }
+.warn-box {
+    background:#FEF3C7;
+    border:1px solid #FCD34D;
+    color:#92400E;
+}
+.dep-warning {
+    background:#FEF3C7;
+    border:1px solid #FCD34D;
+    color:#92400E;
+}
+.denied { background:#FEE2E2; border:1px solid #FECACA; color:#B91C1C; }
+
+/* ---------- FORMULA / JOURNAL HELPERS ---------- */
+.formula-badge {
+    background:#EFF6FF;
+    border:1px solid #BFDBFE;
+    color:#1E40AF;
+}
+.journal-meta {
+    background:#EFF6FF;
+    border:1px solid #BFDBFE;
+}
+.journal-meta .k { color:#1E40AF; }
+.journal-meta .v { color: var(--vx-text); }
+.opening-src { background:#EFF6FF; color:#1E40AF; }
+
+/* ---------- STORAGE BAR ---------- */
+.storage-bar { background:#E2E8F0; }
+.storage-bar-fill {
+    background: linear-gradient(90deg, #0B5ED7, #00A3FF);
+}
+
+/* ---------- TOASTS ---------- */
+.toast { background:#0F172A; }
+.toast.success { background: var(--vx-success); }
+.toast.error   { background: #DC2626; }
+
+/* ---------- MODAL ---------- */
+.modal-header { border-bottom: 1px solid var(--vx-border); }
+.modal-footer { border-top: 1px solid var(--vx-border); }
+
+/* ---------- SCROLLBARS (subtle brand touch) ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #F1F5F9; }
+::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+
 </style>
 
 <script>
