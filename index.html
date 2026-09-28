@@ -1899,7 +1899,8 @@ RENDERERS.employees = function(){
             <option value="">All Roles</option>
             ${EMPLOYEE_ROLES.map(r => `<option value="${r}">${esc(r)}</option>`).join('')}
         </select>
-        ${canCreate?`<button class="btn-primary" onclick="openEmployeeModal()">+ Add Employee</button>`:''}
+            ${canCreate?`<button class="btn-primary" onclick="openEmployeeModal()">+ Add Employee</button>`:''}
+        ${canCreate?`<button class="btn-light" onclick="openEmployeeImportModal()">📥 Import from Excel</button>`:''}
     </div>
     <div class="panel">
         <div class="panel-header">
@@ -2016,6 +2017,265 @@ async function saveEmployee(editId){
         toast(`Employee "${name}" added`, 'success');
     }
     showPage('employees');
+}
+    /* ---------- EMPLOYEE IMPORT FROM EXCEL ---------- */
+let _empImportParsed = null;
+
+function openEmployeeImportModal(){
+    if (!can('createEmployee')) { toast('Admin only.', 'error'); return; }
+    _empImportParsed = null;
+    openModal('Import Employees from Excel', `
+        <div class="info-block">
+            <b>Excel format:</b> First row must be headers.<br>
+            Required columns: <code>ID.NO</code> (or <code>Code</code>), <code>NAME</code> (or <code>Name</code>), <code>Designation</code> (or <code>Role</code>).
+            <br><br>
+            <b>Valid Designations:</b> <code>Store Manager</code>, <code>Area Manager</code>, <code>Operation Manager</code>.
+            <br>
+            Employee codes must be unique. Duplicate codes are handled per import mode below.
+        </div>
+        <div class="form-row">
+            <label>Import Mode</label>
+            <select id="empImpMode">
+                <option value="add">Add only — insert new, skip existing codes</option>
+                <option value="update" selected>Update existing — update matching, add new</option>
+                <option value="replace">Replace all — ⚠ delete ALL employees first, then import</option>
+            </select>
+        </div>
+        <div class="upload-drop" onclick="document.getElementById('empImpFile').click()">
+            <div class="upload-icon">📊</div>
+            <div class="upload-text">Click to upload Excel</div>
+            <div class="upload-hint">.xlsx, .xls, .csv</div>
+        </div>
+        <input type="file" id="empImpFile" class="upload-file" accept=".xlsx,.xls,.csv" onchange="handleEmpImportFile(event)">
+        <div id="empImpPreview" style="margin-top:16px"></div>
+    `, `
+        <button class="btn-light" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" id="empImpConfirmBtn" onclick="confirmEmpImport()" disabled>Import</button>
+    `);
+}
+
+async function handleEmpImportFile(evt){
+    const file = evt.target.files[0];
+    if (!file) return;
+    if (!XLSX_READY) { toast('Excel library still loading. Try again in 2 seconds.', 'error'); evt.target.value=''; return; }
+    const reader = new FileReader();
+    reader.onload = function(e){
+        try {
+            const data = new Uint8Array(e.target.result);
+            const wb = XLSX.read(data, { type:'array', cellDates: true });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { defval:'', raw: true });
+            parseEmpImport(rows, file.name);
+        } catch(err) {
+            toast('Parse failed: ' + err.message, 'error');
+        }
+    };
+    reader.readAsArrayBuffer(file);
+    evt.target.value = '';
+}
+
+function parseEmpImport(rows, filename){
+    if (rows.length === 0) { toast('File is empty', 'error'); return; }
+
+    // Header matcher — case-insensitive, trims spaces, ignores dots
+    const H = {
+        code: ['id.no','id no','idno','id','code','employee code','emp code','empcode','employee id','empid'],
+        name: ['name','employee name','emp name','empname','full name','fullname'],
+        role: ['designation','role','job title','jobtitle','title','position']
+    };
+    function pick(obj, keys){
+        for (const k of Object.keys(obj)) {
+            const n = k.toLowerCase().trim().replace(/\s+/g,' ').replace(/\./g,'.');
+            if (keys.includes(n)) return obj[k];
+        }
+        return undefined;
+    }
+    function cleanName(s){
+        return String(s || '').trim().replace(/\s+/g, ' ').replace(/\.+$/, '');
+    }
+
+    // Allowed roles — must match exactly (case-insensitive)
+    const allowedRoles = EMPLOYEE_ROLES.map(r => r.toLowerCase());
+
+    const valid = [];
+    const warnings = [];
+    const errors = [];
+    const seenCodes = new Set();
+
+    rows.forEach((row, i) => {
+        const lineNo = i + 2;
+        const codeRaw = String(pick(row, H.code) || '').trim();
+        const nameRaw = cleanName(pick(row, H.name));
+        const roleRaw = String(pick(row, H.role) || '').trim();
+
+        // Skip fully blank rows
+        if (!codeRaw && !nameRaw && !roleRaw) return;
+
+        if (!codeRaw) { errors.push({ line: lineNo, msg: 'Missing ID.NO / Code' }); return; }
+        if (!nameRaw) { errors.push({ line: lineNo, msg: `Code "${codeRaw}": missing NAME` }); return; }
+        if (!roleRaw) { errors.push({ line: lineNo, msg: `Code "${codeRaw}": missing Designation` }); return; }
+
+        // Normalize role to the exact casing your DB uses
+        const roleLower = roleRaw.toLowerCase();
+        const roleIdx = allowedRoles.indexOf(roleLower);
+        if (roleIdx < 0) {
+            errors.push({ line: lineNo, msg: `Code "${codeRaw}": invalid Designation "${roleRaw}". Use: ${EMPLOYEE_ROLES.join(', ')}` });
+            return;
+        }
+        const role = EMPLOYEE_ROLES[roleIdx];
+
+        // Clean the code (strip non-alphanumeric except dash/underscore/dot)
+        const code = codeRaw.replace(/[^a-zA-Z0-9._-]/g, '');
+        if (code !== codeRaw) {
+            warnings.push({ line: lineNo, msg: `Code "${codeRaw}" cleaned to "${code}"` });
+        }
+        if (seenCodes.has(code.toLowerCase())) {
+            errors.push({ line: lineNo, msg: `Duplicate Code "${code}" within file` });
+            return;
+        }
+        seenCodes.add(code.toLowerCase());
+
+        valid.push({ code, name: nameRaw, role });
+    });
+
+    _empImportParsed = { valid, warnings, errors, filename };
+
+    // Render preview
+    const preview = document.getElementById('empImpPreview');
+    const sample = valid.slice(0, 12);
+    preview.innerHTML = `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:10px">
+            <b>File:</b> ${esc(filename)} &nbsp;·&nbsp;
+            <span class="green"><b>${valid.length}</b> valid</span>
+            ${warnings.length > 0 ? ` · <span class="orange"><b>${warnings.length}</b> warnings</span>` : ''}
+            ${errors.length > 0 ? ` · <span class="red"><b>${errors.length}</b> errors</span>` : ''}
+        </div>
+        ${sample.length > 0 ? `
+        <div style="max-height:280px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+            <table style="font-size:12px">
+                <thead><tr><th>Code</th><th>Name</th><th>Role</th></tr></thead>
+                <tbody>${sample.map(r => `
+                    <tr>
+                        <td>${esc(r.code)}</td>
+                        <td>${esc(r.name)}</td>
+                        <td><span class="badge badge-${r.role==='Area Manager'?'blue':r.role==='Operation Manager'?'cyan':'green'}">${esc(r.role)}</span></td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>
+        ${valid.length > 12 ? `<p style="font-size:12px;color:#6b7280;margin-top:6px">…and ${valid.length - 12} more</p>` : ''}
+        ` : ''}
+        ${errors.length > 0 ? `
+            <div style="margin-top:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;max-height:180px;overflow-y:auto">
+                <b style="color:#b91c1c">Errors:</b>
+                ${errors.slice(0, 30).map(e => `<div>Line ${e.line}: ${esc(e.msg)}</div>`).join('')}
+                ${errors.length > 30 ? `<div>…and ${errors.length - 30} more</div>` : ''}
+            </div>` : ''}
+    `;
+
+    const btn = document.getElementById('empImpConfirmBtn');
+    if (btn) btn.disabled = valid.length === 0;
+}
+
+async function confirmEmpImport(){
+    if (!_empImportParsed) { toast('No file loaded', 'error'); return; }
+    const { valid } = _empImportParsed;
+    if (valid.length === 0) { toast('No valid rows', 'error'); return; }
+
+    const mode = document.getElementById('empImpMode').value;
+
+    if (mode === 'replace') {
+        if (!confirm(`⚠ REPLACE ALL mode:\n\nThis will DELETE all ${DB.employees.length} existing employees, then import ${valid.length} employees from the file.\n\n⚠ Any store that references a deleted employee as manager will keep the name but lose the link.\n\nContinue?`)) return;
+        if (!confirm('This cannot be undone. Really proceed?')) return;
+    }
+
+    const btn = document.getElementById('empImpConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Importing…';
+
+    try {
+        // Build a code → employee map for fast lookup
+        const byCode = new Map();
+        DB.employees.forEach(e => byCode.set(String(e.code).trim().toLowerCase(), e));
+
+        // ── REPLACE ALL: wipe first ──
+        if (mode === 'replace') {
+            btn.textContent = `Deleting ${DB.employees.length} existing employees…`;
+            if (CLOUD_MODE === 'supabase') {
+                const { error } = await SB.from('employees').delete().neq('id', '___never___');
+                if (error) throw error;
+            }
+            DB.employees = [];
+            byCode.clear();
+        }
+
+        let inserted = 0, updated = 0, skipped = 0, failed = 0;
+
+        for (let i = 0; i < valid.length; i++) {
+            const r = valid[i];
+            btn.textContent = `Importing ${i + 1} / ${valid.length}…`;
+
+            const key = r.code.trim().toLowerCase();
+            const existing = byCode.get(key);
+
+            if (mode === 'add' && existing) { skipped++; continue; }
+
+            if (existing) {
+                // UPDATE existing
+                try {
+                    if (CLOUD_MODE === 'supabase') {
+                        const { error } = await SB.from('employees').update({
+                            code: r.code,
+                            name: r.name,
+                            role: r.role
+                        }).eq('id', existing.id);
+                        if (error) throw error;
+                    }
+                    existing.code = r.code;
+                    existing.name = r.name;
+                    existing.role = r.role;
+                    updated++;
+                } catch(err) {
+                    console.error('Update failed for', r.code, err);
+                    failed++;
+                }
+            } else {
+                // INSERT new
+                const rec = {
+                    id: uid('emp'),
+                    code: r.code,
+                    name: r.name,
+                    role: r.role,
+                    status: 'Active',
+                    createdAt: nowISO()
+                };
+                try {
+                    await DataLayer.insertEmployee(rec);
+                    DB.employees.push(rec);
+                    byCode.set(key, rec);
+                    inserted++;
+                } catch(err) {
+                    console.error('Insert failed for', r.code, err);
+                    failed++;
+                }
+            }
+        }
+
+        _empImportParsed = null;
+        closeModal();
+        const msg = mode === 'replace'
+            ? `Replaced all employees — ${updated + inserted} imported${failed > 0 ? `, ${failed} failed` : ''}`
+            : mode === 'add'
+                ? `Added ${inserted} new employees${skipped > 0 ? `, skipped ${skipped} existing` : ''}${failed > 0 ? `, ${failed} failed` : ''}`
+                : `Imported ${inserted} new + ${updated} updated employees${failed > 0 ? `, ${failed} failed` : ''}`;
+        toast(msg, failed > 0 ? 'error' : 'success');
+        showPage('employees');
+
+    } catch(err) {
+        btn.disabled = false;
+        btn.textContent = 'Import';
+        toast('Import failed: ' + (err.message || err), 'error');
+    }
 }
 
 /* ---------- STORES ---------- */
