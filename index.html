@@ -4911,11 +4911,10 @@ function parsePurchImport(rows, filename){
         if (s.name) storeByWarehouse.set(String(s.name).trim().toLowerCase(), s);
     });
 
-    const parsed = [];
+       const parsed = [];
     const errors = [];
     const warnings = [];
     const resolvedStores = new Set();
-    let fileDate = null;
 
     rows.forEach((row, i) => {
         const rowNo = i + 2;
@@ -4951,14 +4950,7 @@ function parsePurchImport(rows, filename){
         if (!isInScope(rowStoreId)) { errors.push({ line: rowNo, msg: 'Store out of scope' }); return; }
         resolvedStores.add(rowStoreId);
 
-        // File date (TO has one)
-        if (!fileDate) {
-            const d = _pick(row, ['date','to date','transfer date']);
-            if (d) {
-                if (d instanceof Date) fileDate = d.toISOString().slice(0,10);
-                else if (typeof d === 'string' && d.length >= 10) fileDate = d.slice(0,10);
-            }
-        }
+    
 
         parsed.push({
             line: rowNo, itemId: item.id, itemCode: item.code, itemName: item.name,
@@ -4981,17 +4973,14 @@ function parsePurchImport(rows, filename){
     });
     const deduped = [...seen.values()];
 
-    _purchImportParsed = {
+     _purchImportParsed = {
         fileType, lines: deduped,
         storeId: resolvedStores.size === 1 ? [...resolvedStores][0] : null,
-        fileDate, errors, warnings, filename
+        errors, warnings, filename
     };
 
     // Auto-fill
-    if (fileDate) {
-        const dateEl = document.getElementById('purchImpDate');
-        if (dateEl) dateEl.value = fileDate;
-    }
+  
     if (fileType === 'TO') {
         const supEl = document.getElementById('purchImpSupplier');
         if (supEl && !supEl.value) supEl.value = 'Central Warehouse (TO)';
