@@ -2202,7 +2202,7 @@ async function confirmEmpImport(){
         if (mode === 'replace') {
             btn.textContent = `Deleting ${DB.employees.length} existing employees…`;
             if (CLOUD_MODE === 'supabase') {
-                const { error } = await SB.from('employees').delete().neq('id', '___never___');
+            const { error } = await SB.from('employees').delete().neq('id', '00000000-0000-0000-0000-000000000000');
                 if (error) throw error;
             }
             DB.employees = [];
