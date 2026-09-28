@@ -1451,16 +1451,21 @@ const MENU_STRUCTURE = [
     { id:'recycle', icon:'🗑', label:'Recycle Bin' },
     { id:'backup', icon:'💾', label:'Backup / Restore' }
 ];
-    function openSidebar(){
-    document.getElementById('sidebar').classList.add('open');
-    document.getElementById('sidebarBackdrop').classList.add('active');
+function openSidebar(){
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('sidebarBackdrop');
+    if (sb) sb.classList.add('open');
+    if (bd) bd.classList.add('active');
 }
 function closeSidebar(){
-    document.getElementById('sidebar').classList.remove('open');
-    document.getElementById('sidebarBackdrop').classList.remove('active');
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('sidebarBackdrop');
+    if (sb) sb.classList.remove('open');
+    if (bd) bd.classList.remove('active');
 }
 function toggleSidebar(){
     const sb = document.getElementById('sidebar');
+    if (!sb) return;
     if (sb.classList.contains('open')) closeSidebar();
     else openSidebar();
 }
