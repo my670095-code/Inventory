@@ -2289,6 +2289,7 @@ RENDERERS.stores = function(){
     <div class="toolbar">
         <input type="text" id="storeSearch" placeholder="Search..." oninput="filterStores()">
         ${canCreate?`<button class="btn-primary" onclick="openStoreModal()">+ Add Store</button>`:''}
+        ${canCreate?`<button class="btn-light" onclick="openStoreImportModal()">📥 Import from Excel</button>`:''}
     </div>
     <div class="panel">
         <div class="panel-header">
@@ -2434,6 +2435,305 @@ async function saveStore(editId){
         closeModal(); toast('Store added', 'success');
     }
     showPage('stores');
+}
+    /* ---------- STORE IMPORT FROM EXCEL ---------- */
+let _storeImportParsed = null;
+
+function openStoreImportModal(){
+    if (!can('createStore')) { toast('Admin only.', 'error'); return; }
+    _storeImportParsed = null;
+    openModal('Import Stores from Excel', `
+        <div class="info-block">
+            <b>Excel format:</b> First row must be headers.<br>
+            Required: <code>Store Number</code> (or <code>Code</code>).<br>
+            Optional: <code>Store Manager</code>, <code>AREA MANAGER</code>, <code>Operation Manager</code>.
+            <br><br>
+            Missing columns (Name, Area, Type) default to safe values: name = code, area = "Unassigned", type = "Drive Thru".
+            <br>
+            <b>Manager names must match employees in Employee Master</b> — unmatched names are shown as warnings.
+        </div>
+        <div class="form-row">
+            <label>Import Mode</label>
+            <select id="storeImpMode">
+                <option value="add">Add only — insert new, skip existing codes</option>
+                <option value="update" selected>Update existing — update matching, add new</option>
+                <option value="replace">Replace all — ⚠ delete ALL stores first, then import</option>
+            </select>
+        </div>
+        <div class="upload-drop" onclick="document.getElementById('storeImpFile').click()">
+            <div class="upload-icon">📊</div>
+            <div class="upload-text">Click to upload Excel</div>
+            <div class="upload-hint">.xlsx, .xls, .csv</div>
+        </div>
+        <input type="file" id="storeImpFile" class="upload-file" accept=".xlsx,.xls,.csv" onchange="handleStoreImportFile(event)">
+        <div id="storeImpPreview" style="margin-top:16px"></div>
+    `, `
+        <button class="btn-light" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" id="storeImpConfirmBtn" onclick="confirmStoreImport()" disabled>Import</button>
+    `);
+}
+
+async function handleStoreImportFile(evt){
+    const file = evt.target.files[0];
+    if (!file) return;
+    if (!XLSX_READY) { toast('Excel library still loading. Try again in 2 seconds.', 'error'); evt.target.value=''; return; }
+    const reader = new FileReader();
+    reader.onload = function(e){
+        try {
+            const data = new Uint8Array(e.target.result);
+            const wb = XLSX.read(data, { type:'array', cellDates: true });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { defval:'', raw: true });
+            parseStoreImport(rows, file.name);
+        } catch(err) {
+            toast('Parse failed: ' + err.message, 'error');
+        }
+    };
+    reader.readAsArrayBuffer(file);
+    evt.target.value = '';
+}
+
+function _cleanName(s){
+    return String(s || '').trim().replace(/\s+/g, ' ').replace(/\.+$/, '');
+}
+
+function parseStoreImport(rows, filename){
+    if (rows.length === 0) { toast('File is empty', 'error'); return; }
+
+    // Header matcher — case-insensitive, trims spaces
+    const H = {
+        code: ['store number','storenumber','store no','storeno','store code','storecode','code','branch','branch code'],
+        name: ['store name','storename','name','branch name'],
+        area: ['area','region','zone'],
+        type: ['type','store type','storetype'],
+        sm:   ['store manager','storemanager','sm'],
+        am:   ['area manager','areamanager','am'],
+        om:   ['operation manager','operationmanager','om','operations manager']
+    };
+    function pick(obj, keys){
+        for (const k of Object.keys(obj)) {
+            const n = k.toLowerCase().trim().replace(/\s+/g,' ');
+            if (keys.includes(n)) return obj[k];
+        }
+        return undefined;
+    }
+
+    // Build a set of known employee names (normalized) for cross-check
+    const empNames = new Set();
+    DB.employees.forEach(e => empNames.add(norm(_cleanName(e.name))));
+
+    const valid = [];
+    const warnings = [];
+    const errors = [];
+    const seenCodes = new Set();
+
+    rows.forEach((row, i) => {
+        const lineNo = i + 2;
+        const codeRaw = String(pick(row, H.code) || '').trim();
+        const nameRaw = _cleanName(pick(row, H.name));
+        const areaRaw = String(pick(row, H.area) || '').trim();
+        const typeRaw = String(pick(row, H.type) || '').trim();
+        const smRaw   = _cleanName(pick(row, H.sm));
+        const amRaw   = _cleanName(pick(row, H.am));
+        const omRaw   = _cleanName(pick(row, H.om));
+
+        // Skip fully blank rows
+        if (!codeRaw && !nameRaw && !smRaw && !amRaw && !omRaw) return;
+
+        if (!codeRaw) { errors.push({ line: lineNo, msg: 'Missing Store Number' }); return; }
+
+        const code = codeRaw.replace(/[^a-zA-Z0-9._-]/g, '');
+        if (code !== codeRaw) {
+            warnings.push({ line: lineNo, msg: `Code "${codeRaw}" cleaned to "${code}"` });
+        }
+        if (seenCodes.has(code.toLowerCase())) {
+            errors.push({ line: lineNo, msg: `Duplicate Store Number "${code}" within file` });
+            return;
+        }
+        seenCodes.add(code.toLowerCase());
+
+        // Cross-check manager names against Employee Master
+        if (smRaw && !empNames.has(norm(smRaw))) {
+            warnings.push({ line: lineNo, msg: `Store Manager "${smRaw}" not found in Employee Master` });
+        }
+        if (amRaw && !empNames.has(norm(amRaw))) {
+            warnings.push({ line: lineNo, msg: `Area Manager "${amRaw}" not found in Employee Master` });
+        }
+        if (omRaw && !empNames.has(norm(omRaw))) {
+            warnings.push({ line: lineNo, msg: `Operation Manager "${omRaw}" not found in Employee Master` });
+        }
+
+        valid.push({
+            id: 's-' + code,
+            code,
+            name: nameRaw || code,
+            area: areaRaw || 'Unassigned',
+            type: typeRaw || 'Drive Thru',
+            storeManagerName: smRaw,
+            areaManagerName: amRaw,
+            operationManagerName: omRaw,
+            status: 'Active'
+        });
+    });
+
+    _storeImportParsed = { valid, warnings, errors, filename };
+
+    // Render preview
+    const preview = document.getElementById('storeImpPreview');
+    const sample = valid.slice(0, 12);
+    preview.innerHTML = `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:10px">
+            <b>File:</b> ${esc(filename)} &nbsp;·&nbsp;
+            <span class="green"><b>${valid.length}</b> valid</span>
+            ${warnings.length > 0 ? ` · <span class="orange"><b>${warnings.length}</b> warnings</span>` : ''}
+            ${errors.length > 0 ? ` · <span class="red"><b>${errors.length}</b> errors</span>` : ''}
+        </div>
+        ${sample.length > 0 ? `
+        <div style="max-height:280px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+            <table style="font-size:12px">
+                <thead><tr><th>Code</th><th>Name</th><th>Store Mgr</th><th>Area Mgr</th><th>Op Mgr</th></tr></thead>
+                <tbody>${sample.map(r => `
+                    <tr>
+                        <td><b>${esc(r.code)}</b></td>
+                        <td>${esc(r.name)}</td>
+                        <td>${esc(r.storeManagerName || '—')}</td>
+                        <td>${esc(r.areaManagerName || '—')}</td>
+                        <td>${esc(r.operationManagerName || '—')}</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>
+        ${valid.length > 12 ? `<p style="font-size:12px;color:#6b7280;margin-top:6px">…and ${valid.length - 12} more</p>` : ''}
+        ` : ''}
+        ${warnings.length > 0 ? `
+            <div style="margin-top:10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px;font-size:12px;max-height:150px;overflow-y:auto">
+                <b style="color:#c2410c">Warnings:</b>
+                ${warnings.slice(0, 30).map(w => `<div>Line ${w.line}: ${esc(w.msg)}</div>`).join('')}
+                ${warnings.length > 30 ? `<div>…and ${warnings.length - 30} more</div>` : ''}
+            </div>` : ''}
+        ${errors.length > 0 ? `
+            <div style="margin-top:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;max-height:180px;overflow-y:auto">
+                <b style="color:#b91c1c">Errors:</b>
+                ${errors.slice(0, 30).map(e => `<div>Line ${e.line}: ${esc(e.msg)}</div>`).join('')}
+                ${errors.length > 30 ? `<div>…and ${errors.length - 30} more</div>` : ''}
+            </div>` : ''}
+    `;
+
+    const btn = document.getElementById('storeImpConfirmBtn');
+    if (btn) btn.disabled = valid.length === 0;
+}
+
+async function confirmStoreImport(){
+    if (!_storeImportParsed) { toast('No file loaded', 'error'); return; }
+    const { valid } = _storeImportParsed;
+    if (valid.length === 0) { toast('No valid rows', 'error'); return; }
+
+    const mode = document.getElementById('storeImpMode').value;
+
+    if (mode === 'replace') {
+        if (!confirm(`⚠ REPLACE ALL mode:\n\nThis will DELETE all ${DB.stores.length} existing stores.\n\n⚠ Any journals, purchases, sales uploads, openings, or transfers referencing these stores will become orphaned.\n\nContinue?`)) return;
+        if (!confirm('This cannot be undone. Really proceed?')) return;
+    }
+
+    const btn = document.getElementById('storeImpConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Importing…';
+
+    try {
+        // Build a code → store map for fast lookup
+        const byCode = new Map();
+        DB.stores.forEach(s => byCode.set(String(s.code).trim().toLowerCase(), s));
+
+        // ── REPLACE ALL: wipe first ──
+        if (mode === 'replace') {
+            btn.textContent = `Deleting ${DB.stores.length} existing stores…`;
+            if (CLOUD_MODE === 'supabase') {
+                const { error } = await SB.from('stores').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+                if (error) throw error;
+            }
+            DB.stores = [];
+            byCode.clear();
+        }
+
+        let inserted = 0, updated = 0, skipped = 0, failed = 0;
+
+        for (let i = 0; i < valid.length; i++) {
+            const r = valid[i];
+            btn.textContent = `Importing ${i + 1} / ${valid.length}…`;
+
+            const key = r.code.trim().toLowerCase();
+            const existing = byCode.get(key);
+
+            if (mode === 'add' && existing) { skipped++; continue; }
+
+            if (existing) {
+                // UPDATE existing
+                try {
+                    if (CLOUD_MODE === 'supabase') {
+                        const { error } = await SB.from('stores').update({
+                            code: r.code,
+                            name: r.name,
+                            area: r.area,
+                            type: r.type,
+                            store_manager_name: r.storeManagerName || null,
+                            area_manager_name: r.areaManagerName || null,
+                            operation_manager_name: r.operationManagerName || null
+                        }).eq('id', existing.id);
+                        if (error) throw error;
+                    }
+                    existing.code = r.code;
+                    existing.name = r.name;
+                    existing.area = r.area;
+                    existing.type = r.type;
+                    existing.storeManagerName = r.storeManagerName;
+                    existing.areaManagerName = r.areaManagerName;
+                    existing.operationManagerName = r.operationManagerName;
+                    updated++;
+                } catch(err) {
+                    console.error('Update failed for', r.code, err);
+                    failed++;
+                }
+            } else {
+                // INSERT new
+                const rec = {
+                    id: r.id,
+                    code: r.code,
+                    name: r.name,
+                    area: r.area,
+                    type: r.type,
+                    storeManagerName: r.storeManagerName,
+                    areaManagerName: r.areaManagerName,
+                    operationManagerName: r.operationManagerName,
+                    status: 'Active',
+                    createdAt: nowISO()
+                };
+                try {
+                    await DataLayer.insertStore(rec);
+                    DB.stores.push(rec);
+                    byCode.set(key, rec);
+                    inserted++;
+                } catch(err) {
+                    console.error('Insert failed for', r.code, err);
+                    failed++;
+                }
+            }
+        }
+
+        _storeImportParsed = null;
+        closeModal();
+        const msg = mode === 'replace'
+            ? `Replaced all stores — ${updated + inserted} imported${failed > 0 ? `, ${failed} failed` : ''}`
+            : mode === 'add'
+                ? `Added ${inserted} new stores${skipped > 0 ? `, skipped ${skipped} existing` : ''}${failed > 0 ? `, ${failed} failed` : ''}`
+                : `Imported ${inserted} new + ${updated} updated stores${failed > 0 ? `, ${failed} failed` : ''}`;
+        toast(msg, failed > 0 ? 'error' : 'success');
+        showPage('stores');
+
+    } catch(err) {
+        btn.disabled = false;
+        btn.textContent = 'Import';
+        toast('Import failed: ' + (err.message || err), 'error');
+    }
 }
 
 /* ---------- USERS ---------- */
