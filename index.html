@@ -2900,26 +2900,39 @@ async function saveUser(editId){
             if (!sid) { toast('Select a store', 'error'); return; }
         }
 
-        if (CLOUD_MODE === 'supabase') {
-            // Call the Edge Function to create the auth user
-            const { data, error } = await SB.functions.invoke('create-user', {
-                body: {
-                    email,
-                    password,
-                    name,
-                    initials,
-                    role,
-                    storeId: (role === 'store') ? document.getElementById('uStore').value : null
-                }
-            });
-            if (error) { toast('Create failed: ' + (error.message || error), 'error'); return; }
-            audit('CREATE','user',data.id || email,{ email, role });
-            closeModal();
-            toast(`User created. Email: ${email} — Password: ${password}`, 'success');
-            DB = await loadData();
-            showPage('users');
-            return;
+    if (CLOUD_MODE === 'supabase') {
+    // Call the Edge Function to create the auth user
+    const { data, error } = await SB.functions.invoke('create-user', {
+        body: {
+            email,
+            password,
+            name,
+            initials,
+            role,
+            storeId: (role === 'store') ? document.getElementById('uStore').value : null
         }
+    });
+    if (error) {
+        let realMsg = error.message || String(error);
+        try {
+            if (error.context && typeof error.context.json === 'function') {
+                const body = await error.context.json();
+                if (body && body.error) realMsg = body.error;
+            } else if (error.context && typeof error.context.text === 'function') {
+                const txt = await error.context.text();
+                try { const j = JSON.parse(txt); if (j.error) realMsg = j.error; } catch(_) { realMsg = txt || realMsg; }
+            }
+        } catch(_) {}
+        toast('Create failed: ' + realMsg, 'error');
+        return;
+    }
+    audit('CREATE','user',data.id || email,{ email, role });
+    closeModal();
+    toast(`User created. Email: ${email} — Password: ${password}`, 'success');
+    DB = await loadData();
+    showPage('users');
+    return;
+}
        
         // Local mode fallback
         const newUser = { id: uid('u'), username: email, pass: password, name, initials, role, active:true, createdAt:nowISO() };
@@ -3119,7 +3132,7 @@ async function confirmBulkUserExtract(){
         const u = all[i];
         btn.textContent = `Creating ${i + 1} / ${all.length} — ${u.username}`;
 
-        try {
+              try {
             const { data, error } = await SB.functions.invoke('create-user', {
                 body: {
                     email: u.username,
@@ -3131,7 +3144,19 @@ async function confirmBulkUserExtract(){
                     mustChangePassword: true
                 }
             });
-            if (error) throw error;
+            if (error) {
+                let realMsg = error.message || String(error);
+                try {
+                    if (error.context && typeof error.context.json === 'function') {
+                        const body = await error.context.json();
+                        if (body && body.error) realMsg = body.error;
+                    } else if (error.context && typeof error.context.text === 'function') {
+                        const txt = await error.context.text();
+                        try { const j = JSON.parse(txt); if (j.error) realMsg = j.error; } catch(_) { realMsg = txt || realMsg; }
+                    }
+                } catch(_) {}
+                throw new Error(realMsg);
+            }
             if (data && data.error) throw new Error(data.error);
 
             results.ok.push({
