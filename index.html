@@ -2743,6 +2743,7 @@ RENDERERS.users = function(){
     <div class="toolbar">
         <input type="text" id="userSearch" placeholder="Search..." oninput="filterUsers()">
         <button class="btn-primary" onclick="openUserModal()">+ Add User</button>
+        <button class="btn-light" onclick="openExtractUsersModal()">📥 Extract Users from Store Master</button>
     </div>
     <div class="panel">
         <div class="panel-header">
@@ -2919,6 +2920,336 @@ async function saveUser(editId){
             showPage('users');
             return;
         }
+        /* ============================================================
+   BULK USER EXTRACTION FROM STORE MASTER
+   - Store Manager  →  <storecode>@drcafe.com  (assigned to their store)
+   - Area Manager   →  <firstname>@drcafe.com  (scope by name)
+   - Operation Mgr  →  <firstname>@drcafe.com  (scope by name)
+   - Default password: ViewX@2026 (must change on first login)
+   ============================================================ */
+let _bulkUsersPlan = null;
+
+function _slugifyFirstName(fullName){
+    return String(fullName || '').trim().split(/\s+/)[0]
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+}
+function _slugifyFullName(fullName){
+    return String(fullName || '').trim().toLowerCase()
+        .replace(/[^a-z0-9]+/g, '.')
+        .replace(/^\.|\.$/g, '');
+}
+function _initials(fullName){
+    return String(fullName || '').trim().split(/\s+/).map(x => x[0] || '').join('').slice(0,2).toUpperCase();
+}
+
+/* Build the full plan without touching Supabase — pure computation */
+function buildBulkUsersPlan(){
+    const plan = {
+        storeManagers: [],   // { name, username, role, storeId, code, srcStore }
+        areaManagers:  [],   // { name, username, role, storeId:null }
+        opManagers:    [],   // { name, username, role, storeId:null }
+        skipped:       [],   // existing usernames
+        warnings:      []
+    };
+
+    // -- existing usernames in this org --
+    const existingUsernames = new Set(
+        DB.users.map(u => String(u.username || '').toLowerCase())
+    );
+
+    // -- helper: add to plan, with fallbacks for username collisions --
+    function claimUsername(base, fullName, id) {
+        const candidates = [
+            base,
+            base.replace(/^([^.]+)/, '$1.' + _slugifyFullName(fullName).split('.')[1] || '').replace(/\.$/, ''),  // base + lastname
+            base + '.' + (_slugifyFullName(fullName).split('.')[1] || '').charAt(0),                            // base + last initial
+            base + (id || '')                                                                                    // base + id
+        ];
+        for (const c of candidates) {
+            const u = String(c || '').toLowerCase().replace(/[^a-z0-9.]/g,'');
+            if (u && !existingUsernames.has(u)) {
+                existingUsernames.add(u);
+                return u + '@drcafe.com';
+            }
+        }
+        return base + Date.now().toString(36) + '@drcafe.com';  // ultra-fallback
+    }
+
+    // -- Store Managers: one per store --
+    DB.stores.forEach(s => {
+        const name = (s.storeManagerName || '').trim();
+        if (!name) {
+            plan.warnings.push({ store: s.code, msg: `Store ${s.code} has no Store Manager name` });
+            return;
+        }
+        const base = String(s.code || '').toLowerCase().replace(/[^a-z0-9]/g,'');
+        const username = base + '@drcafe.com';
+        if (existingUsernames.has(username.toLowerCase())) {
+            plan.skipped.push({ name, username, reason: 'username already exists', role: 'Store Manager' });
+            return;
+        }
+        existingUsernames.add(username.toLowerCase());
+        plan.storeManagers.push({
+            name,
+            username,
+            role: 'store',
+            roleLabel: 'Store Manager',
+            storeId: 's-' + s.code,
+            storeCode: s.code,
+            initials: _initials(name)
+        });
+    });
+
+    // -- Area Managers: unique by name across all stores --
+    const seenArea = new Set();
+    DB.stores.forEach(s => {
+        const name = (s.areaManagerName || '').trim();
+        if (!name || seenArea.has(norm(name))) return;
+        seenArea.add(norm(name));
+        const base = _slugifyFirstName(name);
+        if (!base) {
+            plan.warnings.push({ store: s.code, msg: `Area Manager "${name}" produced empty username` });
+            return;
+        }
+        const username = base + '@drcafe.com';
+        if (existingUsernames.has(username.toLowerCase())) {
+            plan.skipped.push({ name, username, reason: 'username already exists', role: 'Area Manager' });
+            return;
+        }
+        existingUsernames.add(username.toLowerCase());
+        plan.areaManagers.push({
+            name,
+            username,
+            role: 'area',
+            roleLabel: 'Area Manager',
+            storeId: null,
+            initials: _initials(name)
+        });
+    });
+
+    // -- Operation Managers: unique by name --
+    const seenOp = new Set();
+    DB.stores.forEach(s => {
+        const name = (s.operationManagerName || '').trim();
+        if (!name || seenOp.has(norm(name))) return;
+        seenOp.add(norm(name));
+        const base = _slugifyFirstName(name);
+        if (!base) {
+            plan.warnings.push({ store: s.code, msg: `Operation Manager "${name}" produced empty username` });
+            return;
+        }
+        const username = base + '@drcafe.com';
+        if (existingUsernames.has(username.toLowerCase())) {
+            plan.skipped.push({ name, username, reason: 'username already exists', role: 'Operation Manager' });
+            return;
+        }
+        existingUsernames.add(username.toLowerCase());
+        plan.opManagers.push({
+            name,
+            username,
+            role: 'opmanager',
+            roleLabel: 'Operation Manager',
+            storeId: null,
+            initials: _initials(name)
+        });
+    });
+
+    return plan;
+}
+
+function openExtractUsersModal(){
+    if (!can('manageUsers')) { toast('Admin only.', 'error'); return; }
+    if (!DB.stores || DB.stores.length === 0) {
+        toast('No stores found. Import Store Master first.', 'error');
+        return;
+    }
+
+    _bulkUsersPlan = buildBulkUsersPlan();
+    const p = _bulkUsersPlan;
+    const total = p.storeManagers.length + p.areaManagers.length + p.opManagers.length;
+
+    const sampleRows = [
+        ...p.storeManagers.slice(0, 5).map(u => ({ ...u, sample: 'Store Mgr' })),
+        ...p.areaManagers.slice(0, 3).map(u => ({ ...u, sample: 'Area Mgr' })),
+        ...p.opManagers.slice(0, 2).map(u => ({ ...u, sample: 'Op Mgr' }))
+    ].slice(0, 10);
+
+    openModal('Extract Users from Store Master', `
+        <div class="info-block">
+            <b>This reads your Store Master and generates login accounts:</b>
+            <br>• <b>Store Manager</b> → <code>&lt;store code&gt;@drcafe.com</code> — assigned to their store
+            <br>• <b>Area Manager</b> → <code>&lt;first name&gt;@drcafe.com</code> — scoped by name
+            <br>• <b>Operation Manager</b> → <code>&lt;first name&gt;@drcafe.com</code> — scoped by name
+            <br><br>
+            <b>Password for all:</b> <code>ViewX@2026</code> — user must change on first login.
+        </div>
+
+        <div class="cards" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+            <div class="card"><div class="card-label">Store Managers</div><div class="card-value green">${p.storeManagers.length}</div></div>
+            <div class="card"><div class="card-label">Area Managers</div><div class="card-value blue">${p.areaManagers.length}</div></div>
+            <div class="card"><div class="card-label">Operation Mgrs</div><div class="card-value orange">${p.opManagers.length}</div></div>
+        </div>
+
+        <div style="font-size:13px;margin-bottom:10px"><b>Total new users to create:</b> ${total}</div>
+        ${p.skipped.length > 0 ? `<div style="font-size:12px;color:#6b7280;margin-bottom:10px">${p.skipped.length} already exist — will be skipped.</div>` : ''}
+        ${p.warnings.length > 0 ? `<div class="dep-warning" style="font-size:12px">${p.warnings.length} warning(s) — see below.</div>` : ''}
+
+        ${sampleRows.length > 0 ? `
+        <div style="max-height:260px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:10px">
+            <table style="font-size:12px">
+                <thead><tr><th>Type</th><th>Name</th><th>Username</th><th>Store</th></tr></thead>
+                <tbody>${sampleRows.map(u => `
+                    <tr>
+                        <td><span class="badge badge-${u.role==='store'?'green':u.role==='area'?'blue':'cyan'}">${esc(u.sample)}</span></td>
+                        <td>${esc(u.name)}</td>
+                        <td>${esc(u.username)}</td>
+                        <td>${esc(u.storeCode || '—')}</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>
+        ${(p.storeManagers.length + p.areaManagers.length + p.opManagers.length) > 10 ? `<p style="font-size:12px;color:#6b7280">…and more</p>` : ''}
+        ` : '<div class="empty">Nothing to create.</div>'}
+
+        ${p.warnings.length > 0 ? `
+            <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px;font-size:12px;max-height:140px;overflow-y:auto;margin-top:10px">
+                <b style="color:#c2410c">Warnings:</b>
+                ${p.warnings.map(w => `<div>Store ${esc(w.store)}: ${esc(w.msg)}</div>`).join('')}
+            </div>` : ''}
+    `, `
+        <button class="btn-light" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" id="bulkUsersBtn" onclick="confirmBulkUserExtract()" ${total === 0 ? 'disabled' : ''}>
+            Create ${total} Users
+        </button>
+    `);
+}
+
+async function confirmBulkUserExtract(){
+    if (!_bulkUsersPlan) return;
+    const p = _bulkUsersPlan;
+    const all = [...p.storeManagers, ...p.areaManagers, ...p.opManagers];
+    if (all.length === 0) { toast('Nothing to create.', 'error'); return; }
+
+    const btn = document.getElementById('bulkUsersBtn');
+    btn.disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = `Creating 0 / ${all.length}…`;
+
+    const results = { ok: [], failed: [] };
+
+    for (let i = 0; i < all.length; i++) {
+        const u = all[i];
+        btn.textContent = `Creating ${i + 1} / ${all.length} — ${u.username}`;
+
+        try {
+            const { data, error } = await SB.functions.invoke('create-user', {
+                body: {
+                    email: u.username,                 // already has @drcafe.com
+                    password: 'ViewX@2026',
+                    name: u.name,
+                    initials: u.initials,
+                    role: u.role,
+                    storeId: u.storeId || null,
+                    mustChangePassword: true
+                }
+            });
+            if (error) throw error;
+            if (data && data.error) throw new Error(data.error);
+
+            results.ok.push({
+                name: u.name,
+                username: u.username,
+                password: 'ViewX@2026',
+                role: u.roleLabel,
+                storeCode: u.storeCode || '',
+                id: data && data.id ? data.id : ''
+            });
+        } catch(err) {
+            console.error('Create failed for', u.username, err);
+            results.failed.push({
+                name: u.name,
+                username: u.username,
+                role: u.roleLabel,
+                error: err.message || String(err)
+            });
+        }
+    }
+
+    _bulkUsersPlan = null;
+    closeModal();
+
+    // Reload DB to reflect new profiles
+    try { DB = await loadData(); } catch(e) {}
+    showPage('users');
+
+    // Store results so the export button can use them
+    window._lastBulkResults = results;
+
+    const failMsg = results.failed.length > 0
+        ? ` · ${results.failed.length} failed`
+        : '';
+    toast(`✓ Created ${results.ok.length} users${failMsg}`, results.failed.length > 0 ? 'error' : 'success');
+
+    // Show results modal
+    openBulkUsersResultModal(results);
+}
+
+function openBulkUsersResultModal(results){
+    const failRows = results.failed;
+    openModal('Bulk User Creation — Results', `
+        <div class="info-block">
+            <b>${results.ok.length}</b> users created successfully.
+            ${failRows.length > 0 ? `<b class="red">${failRows.length}</b> failed.` : ''}
+        </div>
+
+        ${results.ok.length > 0 ? `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <b style="font-size:13px">Created accounts</b>
+            <button class="btn-light btn-sm" onclick="exportBulkCredentials()">📥 Export as Excel</button>
+        </div>
+        <div style="max-height:300px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+            <table style="font-size:12px">
+                <thead><tr><th>Name</th><th>Username</th><th>Password</th><th>Role</th><th>Store</th></tr></thead>
+                <tbody>${results.ok.map(r => `
+                    <tr>
+                        <td>${esc(r.name)}</td>
+                        <td><code>${esc(r.username)}</code></td>
+                        <td><code>${esc(r.password)}</code></td>
+                        <td>${esc(r.role)}</td>
+                        <td>${esc(r.storeCode || '—')}</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>` : ''}
+
+        ${failRows.length > 0 ? `
+        <div style="margin-top:14px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;font-size:12px;max-height:160px;overflow-y:auto">
+            <b style="color:#b91c1c">Failed:</b>
+            ${failRows.map(f => `<div>${esc(f.name)} (${esc(f.username)}) — ${esc(f.error)}</div>`).join('')}
+        </div>` : ''}
+    `, `
+        <button class="btn-light" onclick="closeModal()">Close</button>
+    `);
+}
+
+function exportBulkCredentials(){
+    const results = window._lastBulkResults;
+    if (!results || results.ok.length === 0) { toast('No data to export', 'error'); return; }
+    if (typeof XLSX === 'undefined') { toast('Excel library not ready', 'error'); return; }
+
+    const aoa = [
+        ['Name', 'Username', 'Password', 'Role', 'Store Code']
+    ];
+    results.ok.forEach(r => aoa.push([r.name, r.username, r.password, r.role, r.storeCode]));
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{wch:32},{wch:26},{wch:14},{wch:18},{wch:12}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Credentials');
+    XLSX.writeFile(wb, `ViewX_User_Credentials_${todayISO()}.xlsx`);
+    toast('Credentials exported', 'success');
+}
 
         // Local mode fallback
         const newUser = { id: uid('u'), username: email, pass: password, name, initials, role, active:true, createdAt:nowISO() };
