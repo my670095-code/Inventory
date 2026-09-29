@@ -5307,7 +5307,7 @@ function exportViewExcel(id){
     if (!confirm(`Recalculate "${j.id}"?\n\nThis will re-read purchases, transfers, and consumption for ${j.date} and update Expected / Variance.\n\nPhysical counts you entered are NOT changed.`)) return;
 
     // 1. Rebuild the system-side lines from current data
-    const rebuilt = buildCountLines({...});
+    const rebuilt = buildCountLines({
         storeId: j.storeId,
         type: j.type,
         date: j.date,
