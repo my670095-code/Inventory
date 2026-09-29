@@ -4187,8 +4187,8 @@ DB.bom.forEach(b => {
                     failed++;
                 }
             } else {
-                bomCounter++;
-                const id = 'BOM-' + String(bomCounter).padStart(5, '0');
+               maxBomNum++;
+const id = 'BOM-' + String(maxBomNum).padStart(5, '0');
                 try {
                     const { error: e1 } = await SB.from('bom').insert({
                         id, product_id: b.productId, product_name: b.productName,
