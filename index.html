@@ -1603,8 +1603,10 @@ function sumPurchasesSince(storeId, itemId, sinceISO){
 function sumTransfersOutInRange(storeId, itemId, startISO, endISO){
     let sum = 0;
     DB.transfers.forEach(t => {
-        if (t.fromStoreId !== storeId || t.status !== 'Approved' || !t.approvedAt) return;
-        const d = t.approvedAt.slice(0,10);
+        if (t.fromStoreId !== storeId) return;
+        if (t.status !== 'Approved') return;         // ← only Approved
+        const d = t.date;                            // ← user-selected date
+        if (!d) return;
         if (d < startISO) return;
         if (endISO && d > endISO) return;
         t.lines.forEach(l => { if (l.itemId === itemId) sum += Number(l.qty)||0; });
@@ -1614,8 +1616,10 @@ function sumTransfersOutInRange(storeId, itemId, startISO, endISO){
 function sumTransfersInInRange(storeId, itemId, startISO, endISO){
     let sum = 0;
     DB.transfers.forEach(t => {
-        if (t.toStoreId !== storeId || t.status !== 'Approved' || !t.approvedAt) return;
-        const d = t.approvedAt.slice(0,10);
+        if (t.toStoreId !== storeId) return;
+        if (t.status !== 'Approved') return;         // ← only Approved
+        const d = t.date;                            // ← user-selected date
+        if (!d) return;
         if (d < startISO) return;
         if (endISO && d > endISO) return;
         t.lines.forEach(l => { if (l.itemId === itemId) sum += Number(l.qty)||0; });
@@ -1624,18 +1628,26 @@ function sumTransfersInInRange(storeId, itemId, startISO, endISO){
 }
 function sumTransfersOutSince(storeId, itemId, sinceISO){
     let sum = 0;
+    const sinceDate = (sinceISO || '').slice(0,10);
     DB.transfers.forEach(t => {
-        if (t.fromStoreId !== storeId || t.status !== 'Approved' || !t.approvedAt) return;
-        if (t.approvedAt < sinceISO) return;
+        if (t.fromStoreId !== storeId) return;
+        if (t.status !== 'Approved') return;         // ← only Approved
+        const d = t.date;                            // ← user-selected date
+        if (!d) return;
+        if (d <= sinceDate) return;                  // ← compare date-to-date
         t.lines.forEach(l => { if (l.itemId === itemId) sum += Number(l.qty)||0; });
     });
     return sum;
 }
 function sumTransfersInSince(storeId, itemId, sinceISO){
     let sum = 0;
+    const sinceDate = (sinceISO || '').slice(0,10);
     DB.transfers.forEach(t => {
-        if (t.toStoreId !== storeId || t.status !== 'Approved' || !t.approvedAt) return;
-        if (t.approvedAt < sinceISO) return;
+        if (t.toStoreId !== storeId) return;
+        if (t.status !== 'Approved') return;         // ← only Approved
+        const d = t.date;                            // ← user-selected date
+        if (!d) return;
+        if (d <= sinceDate) return;                  // ← compare date-to-date
         t.lines.forEach(l => { if (l.itemId === itemId) sum += Number(l.qty)||0; });
     });
     return sum;
@@ -5279,7 +5291,15 @@ function exportViewExcel(id){
     XLSX.writeFile(wb, `${j.id}_${j.type}_${j.date}.xlsx`);
     toast('Exported ' + j.id, 'success');
 }
-    async function regenerateJournal(id){
+  async function regenerateJournal(id){
+    // Reload latest data first, so we see freshly-approved transfers
+    try {
+        DB = await loadData();
+    } catch(e) {
+        toast('Reload failed: ' + e.message, 'error');
+        return;
+    }
+
     const j = DB.journals.find(x => x.id === id);
     if (!j) { toast('Journal not found', 'error'); return; }
     if (j.status !== 'Submitted') { toast('Only submitted journals can be recalculated', 'error'); return; }
@@ -5287,7 +5307,7 @@ function exportViewExcel(id){
     if (!confirm(`Recalculate "${j.id}"?\n\nThis will re-read purchases, transfers, and consumption for ${j.date} and update Expected / Variance.\n\nPhysical counts you entered are NOT changed.`)) return;
 
     // 1. Rebuild the system-side lines from current data
-    const rebuilt = buildCountLines({
+    const rebuilt = buildCountLines({...});
         storeId: j.storeId,
         type: j.type,
         date: j.date,
