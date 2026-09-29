@@ -4136,7 +4136,11 @@ async function confirmBOMImport(){
         DB.bom.forEach(b => existingByProduct.set(norm(b.productId), b));
 
         let inserted = 0, updated = 0, skipped = 0, failed = 0;
-        let bomCounter = DB.bom.length;
+let maxBomNum = 0;
+DB.bom.forEach(b => {
+    const num = parseInt(b.id.replace('BOM-', ''), 10);
+    if (!isNaN(num) && num > maxBomNum) maxBomNum = num;
+});
 
         for (const b of boms) {
             const key = norm(b.productId);
