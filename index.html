@@ -541,8 +541,10 @@ const DataLayer = {
             if (opts.in) {
                 for (const [col, arr] of Object.entries(opts.in)) q = q.in(col, arr);
             }
-            if (opts.order) {
+                      if (opts.order) {
                 q = q.order(opts.order.col, { ascending: opts.order.asc !== false });
+            } else {
+                q = q.order('id', { ascending: true });
             }
 
             const { data, error } = await q;
